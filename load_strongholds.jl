@@ -4,11 +4,11 @@
 end
 
 begin
-    orientations_vec = ["E", "W", "N", "S"]
-    orientations = Dict{String, Int8}(orientations_vec[i] => i for i in eachindex(orientations_vec))
-    pieces_vec = ["Corridor", "PrisonHall", "LeftTurn", "RightTurn", "SquareRoom", "Stairs", "SpiralStaircase", "FiveWayCrossing", "ChestCorridor", "Library", "PortalRoom", "SmallCorridor", "Start", "None"]
-    pieces = Dict{String, Int8}(pieces_vec[i] => i for i in eachindex(pieces_vec))
-    piece_to_num_exits = [3, 1, 1, 1, 3, 1, 1, 5, 1, 0, 0, 0, 1, 0]
+    const orientations_vec = ["E", "W", "N", "S"]
+    const orientations = Dict{String, Int8}(orientations_vec[i] => i for i in eachindex(orientations_vec))
+    const pieces_vec = ["Corridor", "PrisonHall", "LeftTurn", "RightTurn", "SquareRoom", "Stairs", "SpiralStaircase", "FiveWayCrossing", "ChestCorridor", "Library", "PortalRoom", "SmallCorridor", "Start", "None"]
+    const pieces = Dict{String, Int8}(pieces_vec[i] => i for i in eachindex(pieces_vec))
+    const piece_to_num_exits = [3, 1, 1, 1, 3, 1, 1, 5, 1, 0, 0, 0, 1, 0]
 end
 
 mutable struct Room
