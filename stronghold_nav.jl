@@ -6,6 +6,7 @@
     using Flux: onehot, onecold
     using Dates
     using StaticArrays
+    using BSON
 end
 
 begin
@@ -132,7 +133,7 @@ function navigates(s, model)
     n = length(s)
     r = s[n]
     while r.piece != 11
-        exit = argmax(model(encode_room(s, n))[2:6])
+        exit = argmax(model(encode_room(s, n))[end-4:end])
         if exit != r.correctDirection
             return false
         end
@@ -154,10 +155,20 @@ begin
     @show mean([navigates(s, model) for s in strongholds[90001:95000]])
 end
 
+function train_cb()
+    score = mean([navigates(s, model) for s in strongholds[90001:95000]])
+    println(Time(now()), "\t", score)
+    score > 0.195 && Flux.stop()
+end
+
 begin
-    @time Flux.train!(loss, params(model), data, opt; cb = Flux.throttle(() -> println(Time(now()), "\t", mean([navigates(s, model) for s in strongholds[90001:95000]])), 30))
+    @time Flux.train!(loss, params(model), data, opt; cb = Flux.throttle(train_cb, 30))
 end
 
 begin
     navigates_test = mean([navigates(s, model) for s in strongholds[95001:100000]])
+end
+
+begin
+    bson("models/stateless_185.bson", stateless_model = model)
 end
