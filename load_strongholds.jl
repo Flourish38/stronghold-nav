@@ -26,7 +26,7 @@ mutable struct Room
     end
 end
 
-valid_exits(r::Room) = r.exits[1:piece_to_num_exits[r.piece]]
+valid_exits(r::Room) = vcat(r.parent > 0 ? [0] : [], (1:5)[r.exits .> 0])
 
 function assignParents!(stronghold)
     queue = Set{Int}()
