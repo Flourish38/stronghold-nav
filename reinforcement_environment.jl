@@ -2,28 +2,20 @@
 
 @time begin
     println("Loading packages...")
-    using BenchmarkTools: @benchmark
-    using ProgressMeter
-    using Statistics
-    using Dates
-    using BSON
+    using StaticArrays
     using Reinforce
-    #using IntervalSets
-    using Flux
-    using Flux: onehot,onecold
 end
 
 mutable struct StrongholdEnvironment <: AbstractEnvironment
     reward::Int
     state::Vector{Int8}
-    steps::Int
     stronghold::Vector{Room}
     room::Int16
     last_piece::Int8
     last_exit::Int8
     entry::Int8
     function StrongholdEnvironment(s::Vector{Room})
-        env = new(0, [], 0, s, length(s), 14, 0, 0)
+        env = new(0, [], s, length(s), 14, 0, 0)
         env.state = get_state(env)
         env
     end
@@ -31,54 +23,65 @@ end
 
 begin
     current(env::StrongholdEnvironment)::Room = env.stronghold[env.room]
-    get_piece(env::StrongholdEnvironment, room)::Int8 = get_piece(env.stronghold, room)
-    encode_piece(s, room) = onehot(get_piece(s, room), 1:14)
-    get_state(env::StrongholdEnvironment) = reduce(vcat, x(env) for x in STATE_FUNCTION_LIST)
+    function get_state(env::StrongholdEnvironment)  # This runs in <100ns :)
+        c = current(env)
+        output = @MVector zeros(Int8, STATE_WIDTH)
+        output[SCALAR_FUNCTION_OFFSETS] .= SVector{NUM_SCALAR_FUNCTIONS}(x(env, c) for x in SCALAR_FUNCTION_LIST)
+        output[VECTOR_FUNCTION_OFFSETS .+ SVector{NUM_VECTOR_FUNCTIONS}(x(env, c) for x in VECTOR_FUNCTION_LIST)] .= 1
+        return output
+    end
 end
 
 
-begin
+begin  # Optimization hell
     const PORTAL_ROOM = 10
     const CORRECT_DIRECTION = 1
     const WRONG_DIRECTION = -2
     const CLOSED_EXIT = -5
     const INVALID_EXIT = -10
     const INPUT_VEC_ORDER = split("DEPTH,DIRECTION,ENTRY,PREV_EXIT_INDEX_COMPAT,CURRENT,PARENT_ROOM,EXIT_1,EXIT_2,EXIT_3,EXIT_4,EXIT_5", ',')
+    # These all return an integer. If it is a scalar function, it returns the scalar. If it is a vector function, it returns the onehot index (1-indexed.)
     const STATE_FUNCTIONS = Dict(
-        "CURRENT" => (env::StrongholdEnvironment) -> onehot(current(env).piece, 1:14),
-        "PARENT_ROOM" => (env::StrongholdEnvironment) -> encode_piece(env, current(env).parent),
-        "PREVIOUS_ROOM" => (env::StrongholdEnvironment) -> onehot(env.last_piece, 1:14),
-        "EXIT_1" => (env::StrongholdEnvironment) -> encode_piece(env, current(env).exits[1]),
-        "EXIT_2" => (env::StrongholdEnvironment) -> encode_piece(env, current(env).exits[2]),
-        "EXIT_3" => (env::StrongholdEnvironment) -> encode_piece(env, current(env).exits[3]),
-        "EXIT_4" => (env::StrongholdEnvironment) -> encode_piece(env, current(env).exits[4]),
-        "EXIT_5" => (env::StrongholdEnvironment) -> encode_piece(env, current(env).exits[5]),
-        "PREV_EXIT_INDEX" => (env::StrongholdEnvironment) -> SVector{1, Int8}(env.last_exit),
-        "PREV_EXIT_INDEX_COMPAT" => (env::StrongholdEnvironment) -> onehot(env.last_exit, 0:5),
-        "DIRECTION" => (env::StrongholdEnvironment) -> onehot(current(env).orientation, 1:4),
-        "DEPTH" => (env::StrongholdEnvironment) -> SVector{1, Int8}(current(env).depth),
-        "CONSTANT" => (env::StrongholdEnvironment) -> SVector{1, Int8}(0),
-        "DOWNWARDS" => (env::StrongholdEnvironment) -> SVector{1, Int8}(env.entry == 0 ? 1 : 0),
-        "ENTRY" => (env::StrongholdEnvironment) -> onehot(env.entry, 0:5)
+        "CURRENT" => (env::StrongholdEnvironment, c::Room) -> c.piece,
+        "PARENT_ROOM" => (env::StrongholdEnvironment, c::Room) -> get_piece(env.stronghold, c.parent),
+        "PREVIOUS_ROOM" => (env::StrongholdEnvironment, c::Room) -> env.last_piece,
+        "EXIT_1" => (env::StrongholdEnvironment, c::Room) -> get_piece(env.stronghold, c.exits[1]),
+        "EXIT_2" => (env::StrongholdEnvironment, c::Room) -> get_piece(env.stronghold, c.exits[2]),
+        "EXIT_3" => (env::StrongholdEnvironment, c::Room) -> get_piece(env.stronghold, c.exits[3]),
+        "EXIT_4" => (env::StrongholdEnvironment, c::Room) -> get_piece(env.stronghold, c.exits[4]),
+        "EXIT_5" => (env::StrongholdEnvironment, c::Room) -> get_piece(env.stronghold, c.exits[5]),
+        "PREV_EXIT_INDEX" => (env::StrongholdEnvironment, c::Room) -> env.last_exit,
+        "PREV_EXIT_INDEX_COMPAT" => (env::StrongholdEnvironment, c::Room) -> env.last_exit + 1,
+        "DIRECTION" => (env::StrongholdEnvironment, c::Room) -> c.orientation,
+        "DEPTH" => (env::StrongholdEnvironment, c::Room) -> c.depth,
+        "CONSTANT" => (env::StrongholdEnvironment, c::Room) -> 0,
+        "DOWNWARDS" => (env::StrongholdEnvironment, c::Room) -> env.entry == 0,
+        "ENTRY" => (env::StrongholdEnvironment, c::Room) -> env.entry + 1
     )
-    const STATE_FUNCTION_LIST = [STATE_FUNCTIONS[x] for x in INPUT_VEC_ORDER]
-    #= const STATE_SPACES = Dict(
-        "CURRENT" => [0..1 for _ in 1:14],
-        "PARENT_ROOM" => [0..1 for _ in 1:14],
-        "PREVIOUS_ROOM" => [0..1 for _ in 1:14],
-        "EXIT_1" => [0..1 for _ in 1:14],
-        "EXIT_2" => [0..1 for _ in 1:14],
-        "EXIT_3" => [0..1 for _ in 1:14],
-        "EXIT_4" => [0..1 for _ in 1:14],
-        "EXIT_5" => [0..1 for _ in 1:14],
-        "PREV_EXIT_INDEX" => [0..5],
-        "PREV_EXIT_INDEX_COMPAT" => [0..1 for _ in 0:5],
-        "DIRECTION" => [0..1 for _ in 1:4],
-        "DEPTH" => [0..typemax(Int8)],
-        "CONSTANT" => [0..0],
-        "DOWNWARDS" => [0..1],
-        "ENTRY" => [0..1 for _ in 0:5]
-    ) =#
+    const STATE_WIDTHS = Dict(
+        "CURRENT" => 14,
+        "PARENT_ROOM" => 14,
+        "PREVIOUS_ROOM" => 14,
+        "EXIT_1" => 14,
+        "EXIT_2" => 14,
+        "EXIT_3" => 14,
+        "EXIT_4" => 14,
+        "EXIT_5" => 14,
+        "PREV_EXIT_INDEX" => 1,
+        "PREV_EXIT_INDEX_COMPAT" => 6,
+        "DIRECTION" => 4,
+        "DEPTH" => 1,
+        "CONSTANT" => 1,
+        "DOWNWARDS" => 1,
+        "ENTRY" => 6
+    )
+    const STATE_WIDTH = sum(STATE_WIDTHS[x] for x in INPUT_VEC_ORDER)
+    const NUM_SCALAR_FUNCTIONS = sum(STATE_WIDTHS[x] == 1 for x in INPUT_VEC_ORDER)
+    const NUM_VECTOR_FUNCTIONS = length(INPUT_VEC_ORDER) - NUM_SCALAR_FUNCTIONS
+    const SCALAR_FUNCTION_LIST = SVector{NUM_SCALAR_FUNCTIONS}([STATE_FUNCTIONS[x] for x in INPUT_VEC_ORDER if STATE_WIDTHS[x] == 1])
+    const VECTOR_FUNCTION_LIST = SVector{NUM_VECTOR_FUNCTIONS}([STATE_FUNCTIONS[x] for x in INPUT_VEC_ORDER if STATE_WIDTHS[x] != 1])
+    const SCALAR_FUNCTION_OFFSETS = SVector{NUM_SCALAR_FUNCTIONS}([sum([STATE_WIDTHS[x] for x in INPUT_VEC_ORDER[1:i]]) + 1 for i in 0:(length(INPUT_VEC_ORDER)-1) if STATE_WIDTHS[INPUT_VEC_ORDER[i+1]] == 1])
+    const VECTOR_FUNCTION_OFFSETS = SVector{NUM_VECTOR_FUNCTIONS}([sum([STATE_WIDTHS[x] for x in INPUT_VEC_ORDER[1:i]]) for i in 0:(length(INPUT_VEC_ORDER)-1) if STATE_WIDTHS[INPUT_VEC_ORDER[i+1]] != 1])
 end
 
 begin
@@ -91,10 +94,16 @@ begin
         if train_ind > length(train)
             train_ind = 1
         end
-        return StrongholdEnvironment(strongholds[train[train_ind]])
+        a = strongholds[train[train_ind]]
+        env.room = length(env.stronghold)
+        env.last_piece = 14
+        env.last_exit = 0
+        env.entry = 0
+        env.reward = 0
+        env.state = get_state(env)
+        return env
     end
     function Reinforce.step!(env::StrongholdEnvironment, s, a)
-        env.steps += 1
         c = current(env)
         if a > piece_to_num_exits[c.piece]
             env.reward = INVALID_EXIT
@@ -119,28 +128,25 @@ begin
         return env.reward, env.state
     end
     Reinforce.ismdp(::StrongholdEnvironment) = false
-    Reinforce.maxsteps(::StrongholdEnvironment) = 0
+    Reinforce.maxsteps(::StrongholdEnvironment) = 100
 end
 
+begin
+    struct FirstExitPolicy <: AbstractPolicy end
+    Reinforce.action(π::FirstExitPolicy, r, s, A) = 1    
+end
 
-@time begin
+return
+
+begin
     train_ind = 0
     env = StrongholdEnvironment(strongholds[1])
     policy = RandomPolicy()
-    wins = 0
-    total_niter = 0
-    @showprogress for _ in 1:90000
-        reset!(env)
-        ep = Episode(env, policy)
-        for (s, a, r, s′) in ep
-            #println(r)
-        end
-        total_niter += ep.niter
+    reset!(env)
+    ep = Episode(env, policy)
+    yea = @elapsed for (s, a, r, s′) in ep
+        #println(current(env).piece)
     end
-    #println(wins)
-    println(total_niter/90000)
-    #println(ep.total_reward)
-    #println(ep.niter)
+    println(yea / ep.niter)
 end
-
 
