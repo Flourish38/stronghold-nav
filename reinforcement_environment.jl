@@ -1,4 +1,6 @@
-@time include("load_strongholds.jl")
+println(INPUT_VEC_ORDER)
+
+include("load_strongholds.jl")
 
 @time begin
     println("Loading packages...")
@@ -7,7 +9,7 @@
 end
 
 mutable struct StrongholdEnvironment <: AbstractEnvironment
-    reward::Int
+    reward::Float64
     state::Vector{Int8}
     stronghold::Vector{Room}
     room::Int16
@@ -26,20 +28,20 @@ begin
     function get_state(env::StrongholdEnvironment)  # This runs in <100ns :)
         c = current(env)
         output = @MVector zeros(Int8, STATE_WIDTH)
-        output[SCALAR_FUNCTION_OFFSETS] .= SVector{NUM_SCALAR_FUNCTIONS}(x(env, c) for x in SCALAR_FUNCTION_LIST)
-        output[VECTOR_FUNCTION_OFFSETS .+ SVector{NUM_VECTOR_FUNCTIONS}(x(env, c) for x in VECTOR_FUNCTION_LIST)] .= 1
+        output[SCALAR_FUNCTION_OFFSETS] .= SVector{NUM_SCALAR_FUNCTIONS, Int8}(x(env, c) for x in SCALAR_FUNCTION_LIST)
+        output[VECTOR_FUNCTION_OFFSETS .+ SVector{NUM_VECTOR_FUNCTIONS, Int8}(x(env, c) for x in VECTOR_FUNCTION_LIST)] .= 1
         return output
     end
 end
 
 
 begin  # Optimization hell
-    const PORTAL_ROOM = 10
+    const PORTAL_ROOM = 50
     const CORRECT_DIRECTION = 1
     const WRONG_DIRECTION = -2
     const CLOSED_EXIT = -5
     const INVALID_EXIT = -10
-    const INPUT_VEC_ORDER = split("DEPTH,DIRECTION,ENTRY,PREV_EXIT_INDEX_COMPAT,CURRENT,PARENT_ROOM,EXIT_1,EXIT_2,EXIT_3,EXIT_4,EXIT_5", ',')
+    const INPUT_VEC_FORMAT = split(INPUT_VEC_ORDER, ',')
     # These all return an integer. If it is a scalar function, it returns the scalar. If it is a vector function, it returns the onehot index (1-indexed.)
     const STATE_FUNCTIONS = Dict(
         "CURRENT" => (env::StrongholdEnvironment, c::Room) -> c.piece,
@@ -75,13 +77,13 @@ begin  # Optimization hell
         "DOWNWARDS" => 1,
         "ENTRY" => 6
     )
-    const STATE_WIDTH = sum(STATE_WIDTHS[x] for x in INPUT_VEC_ORDER)
-    const NUM_SCALAR_FUNCTIONS = sum(STATE_WIDTHS[x] == 1 for x in INPUT_VEC_ORDER)
-    const NUM_VECTOR_FUNCTIONS = length(INPUT_VEC_ORDER) - NUM_SCALAR_FUNCTIONS
-    const SCALAR_FUNCTION_LIST = SVector{NUM_SCALAR_FUNCTIONS}([STATE_FUNCTIONS[x] for x in INPUT_VEC_ORDER if STATE_WIDTHS[x] == 1])
-    const VECTOR_FUNCTION_LIST = SVector{NUM_VECTOR_FUNCTIONS}([STATE_FUNCTIONS[x] for x in INPUT_VEC_ORDER if STATE_WIDTHS[x] != 1])
-    const SCALAR_FUNCTION_OFFSETS = SVector{NUM_SCALAR_FUNCTIONS}([sum([STATE_WIDTHS[x] for x in INPUT_VEC_ORDER[1:i]]) + 1 for i in 0:(length(INPUT_VEC_ORDER)-1) if STATE_WIDTHS[INPUT_VEC_ORDER[i+1]] == 1])
-    const VECTOR_FUNCTION_OFFSETS = SVector{NUM_VECTOR_FUNCTIONS}([sum([STATE_WIDTHS[x] for x in INPUT_VEC_ORDER[1:i]]) for i in 0:(length(INPUT_VEC_ORDER)-1) if STATE_WIDTHS[INPUT_VEC_ORDER[i+1]] != 1])
+    const STATE_WIDTH = sum(STATE_WIDTHS[x] for x in INPUT_VEC_FORMAT)
+    const NUM_SCALAR_FUNCTIONS = sum(STATE_WIDTHS[x] == 1 for x in INPUT_VEC_FORMAT)
+    const NUM_VECTOR_FUNCTIONS = length(INPUT_VEC_FORMAT) - NUM_SCALAR_FUNCTIONS
+    const SCALAR_FUNCTION_LIST = SVector{NUM_SCALAR_FUNCTIONS}([STATE_FUNCTIONS[x] for x in INPUT_VEC_FORMAT if STATE_WIDTHS[x] == 1])
+    const VECTOR_FUNCTION_LIST = SVector{NUM_VECTOR_FUNCTIONS}([STATE_FUNCTIONS[x] for x in INPUT_VEC_FORMAT if STATE_WIDTHS[x] != 1])
+    const SCALAR_FUNCTION_OFFSETS = SVector{NUM_SCALAR_FUNCTIONS}([sum([STATE_WIDTHS[x] for x in INPUT_VEC_FORMAT[1:i]]) + 1 for i in 0:(length(INPUT_VEC_FORMAT)-1) if STATE_WIDTHS[INPUT_VEC_FORMAT[i+1]] == 1])
+    const VECTOR_FUNCTION_OFFSETS = SVector{NUM_VECTOR_FUNCTIONS}([sum([STATE_WIDTHS[x] for x in INPUT_VEC_FORMAT[1:i]]) for i in 0:(length(INPUT_VEC_FORMAT)-1) if STATE_WIDTHS[INPUT_VEC_FORMAT[i+1]] != 1])
 end
 
 begin
@@ -137,16 +139,3 @@ begin
 end
 
 return
-
-begin
-    train_ind = 0
-    env = StrongholdEnvironment(strongholds[1])
-    policy = RandomPolicy()
-    reset!(env)
-    ep = Episode(env, policy)
-    yea = @elapsed for (s, a, r, s′) in ep
-        #println(current(env).piece)
-    end
-    println(yea / ep.niter)
-end
-
