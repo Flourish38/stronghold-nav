@@ -8,17 +8,41 @@ include("load_strongholds.jl")
     using Reinforce
 end
 
+begin
+    const MAX_STEPS = 100
+    const INPUT_VEC_FORMAT = split(INPUT_VEC_ORDER, ',')
+    const STATE_WIDTHS = Dict(
+        "CURRENT" => 14,
+        "PARENT_ROOM" => 14,
+        "PREVIOUS_ROOM" => 14,
+        "EXIT_1" => 14,
+        "EXIT_2" => 14,
+        "EXIT_3" => 14,
+        "EXIT_4" => 14,
+        "EXIT_5" => 14,
+        "PREV_EXIT_INDEX" => 1,
+        "PREV_EXIT_INDEX_COMPAT" => 6,
+        "DIRECTION" => 4,
+        "DEPTH" => 1,
+        "CONSTANT" => 1,
+        "DOWNWARDS" => 1,
+        "ENTRY" => 6
+    )
+    const STATE_WIDTH = sum(STATE_WIDTHS[x] for x in INPUT_VEC_FORMAT)
+end
+
 mutable struct StrongholdEnvironment <: AbstractEnvironment
     reward::Float64
-    state::Vector{Int8}
+    steps::Int
+    state::SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}
     stronghold::Vector{Room}
     room::Int16
     last_piece::Int8
     last_exit::Int8
     entry::Int8
     function StrongholdEnvironment(s::Vector{Room})
-        env = new(0, [], s, length(s), 14, 0, 0)
-        env.state = get_state(env)
+        env = new(0, 1, SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}(undef), s, length(s), 14, 0, 0)
+        env.state[1] = get_state(env)
         env
     end
 end
@@ -38,10 +62,9 @@ end
 begin  # Optimization hell
     const PORTAL_ROOM = 50
     const CORRECT_DIRECTION = 1
-    const WRONG_DIRECTION = -2
+    const WRONG_DIRECTION = -1
     const CLOSED_EXIT = -5
     const INVALID_EXIT = -10
-    const INPUT_VEC_FORMAT = split(INPUT_VEC_ORDER, ',')
     # These all return an integer. If it is a scalar function, it returns the scalar. If it is a vector function, it returns the onehot index (1-indexed.)
     const STATE_FUNCTIONS = Dict(
         "CURRENT" => (env::StrongholdEnvironment, c::Room) -> c.piece,
@@ -60,24 +83,6 @@ begin  # Optimization hell
         "DOWNWARDS" => (env::StrongholdEnvironment, c::Room) -> env.entry == 0,
         "ENTRY" => (env::StrongholdEnvironment, c::Room) -> env.entry + 1
     )
-    const STATE_WIDTHS = Dict(
-        "CURRENT" => 14,
-        "PARENT_ROOM" => 14,
-        "PREVIOUS_ROOM" => 14,
-        "EXIT_1" => 14,
-        "EXIT_2" => 14,
-        "EXIT_3" => 14,
-        "EXIT_4" => 14,
-        "EXIT_5" => 14,
-        "PREV_EXIT_INDEX" => 1,
-        "PREV_EXIT_INDEX_COMPAT" => 6,
-        "DIRECTION" => 4,
-        "DEPTH" => 1,
-        "CONSTANT" => 1,
-        "DOWNWARDS" => 1,
-        "ENTRY" => 6
-    )
-    const STATE_WIDTH = sum(STATE_WIDTHS[x] for x in INPUT_VEC_FORMAT)
     const NUM_SCALAR_FUNCTIONS = sum(STATE_WIDTHS[x] == 1 for x in INPUT_VEC_FORMAT)
     const NUM_VECTOR_FUNCTIONS = length(INPUT_VEC_FORMAT) - NUM_SCALAR_FUNCTIONS
     const SCALAR_FUNCTION_LIST = SVector{NUM_SCALAR_FUNCTIONS}([STATE_FUNCTIONS[x] for x in INPUT_VEC_FORMAT if STATE_WIDTHS[x] == 1])
@@ -89,6 +94,7 @@ end
 begin
     Reinforce.finished(env::StrongholdEnvironment, s′) = current(env).piece == 11
     Reinforce.actions(env::StrongholdEnvironment, s) = 0:5
+    Reinforce.state(env::StrongholdEnvironment) = env.state[1:env.steps]
     train_ind = 1
     function Reinforce.reset!(env::StrongholdEnvironment)
         global train_ind
@@ -102,10 +108,12 @@ begin
         env.last_exit = 0
         env.entry = 0
         env.reward = 0
-        env.state = get_state(env)
+        env.steps = 1
+        env.state[1] = get_state(env)
         return env
     end
     function Reinforce.step!(env::StrongholdEnvironment, s, a)
+        env.steps += 1
         c = current(env)
         if a > piece_to_num_exits[c.piece]
             env.reward = INVALID_EXIT
@@ -122,15 +130,15 @@ begin
                 env.room = c.exits[a]
                 env.entry = 0
             end
-            env.state = get_state(env)
         end
+        env.state[env.steps] = get_state(env)
         if current(env).piece == 11
             env.reward = PORTAL_ROOM
         end
-        return env.reward, env.state
+        return reward(env), state(env)
     end
     Reinforce.ismdp(::StrongholdEnvironment) = false
-    Reinforce.maxsteps(::StrongholdEnvironment) = 100
+    Reinforce.maxsteps(::StrongholdEnvironment) = MAX_STEPS
 end
 
 begin
