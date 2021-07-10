@@ -32,17 +32,18 @@ begin
 end
 
 mutable struct StrongholdEnvironment <: AbstractEnvironment
+    resettable::Bool
     reward::Float64
     steps::Int
-    state::SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}
+    state::SVector{STATE_WIDTH, Int8}
     stronghold::Vector{Room}
     room::Int16
     last_piece::Int8
     last_exit::Int8
     entry::Int8
-    function StrongholdEnvironment(s::Vector{Room})
-        env = new(0, 0, SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}(undef), s, length(s), 14, 0, 0)
-        env.state[1] = get_state(env)
+    function StrongholdEnvironment(s::Vector{Room}, r = true)
+        env = new(r, 0, 0, (@SVector zeros(STATE_WIDTH)), s, length(s), 14, 0, 0)
+        env.state = get_state(env)
         env
     end
 end
@@ -94,9 +95,10 @@ end
 begin
     Reinforce.finished(env::StrongholdEnvironment, s′) = current(env).piece == 11
     Reinforce.actions(env::StrongholdEnvironment, s) = 0:5
-    Reinforce.state(env::StrongholdEnvironment) = env.state[1:(env.steps + 1)]
+    Reinforce.state(env::StrongholdEnvironment) = env.state
     train_ind = 1
     function Reinforce.reset!(env::StrongholdEnvironment)
+        env.resettable || return env
         env.stronghold = strongholds[rand(train)]
         env.room = length(env.stronghold)
         env.last_piece = 14
@@ -104,7 +106,7 @@ begin
         env.entry = 0
         env.reward = 0
         env.steps = 0
-        env.state[1] = get_state(env)
+        env.state = get_state(env)
         return env
     end
     function Reinforce.step!(env::StrongholdEnvironment, s, a)
@@ -126,7 +128,7 @@ begin
                 env.entry = 0
             end
         end
-        env.state[env.steps + 1] = get_state(env)
+        env.state = get_state(env)
         if current(env).piece == 11
             env.reward = PORTAL_ROOM
         end
@@ -142,17 +144,14 @@ begin
 end
 
 struct StrongholdReplayBuffer
-    state::SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}
+    states::SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}
     actions::SVector{MAX_STEPS, Int8}
     rewards::SVector{MAX_STEPS, Int8}
-    function StrongholdReplayBuffer(env::StrongholdEnvironment, actions, rewards)
-        new(env.state, actions, rewards)
-    end
 end
 
 function Base.iterate(rb::StrongholdReplayBuffer, i=1)
     (i > MAX_STEPS || rb.actions[i] == -1) && return nothing
-    return (rb.state[1:i], rb.actions[i], rb.rewards[i], rb.state[1:i+1]), i + 1
+    return (rb.states[i], rb.actions[i], rb.rewards[i], rb.states[i+1]), i + 1
 end
 
 return
