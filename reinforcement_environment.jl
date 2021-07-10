@@ -9,7 +9,7 @@ include("load_strongholds.jl")
 end
 
 begin
-    const MAX_STEPS = 100
+    const MAX_STEPS = 40
     const INPUT_VEC_FORMAT = split(INPUT_VEC_ORDER, ',')
     const STATE_WIDTHS = Dict(
         "CURRENT" => 14,
@@ -41,7 +41,7 @@ mutable struct StrongholdEnvironment <: AbstractEnvironment
     last_exit::Int8
     entry::Int8
     function StrongholdEnvironment(s::Vector{Room})
-        env = new(0, 1, SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}(undef), s, length(s), 14, 0, 0)
+        env = new(0, 0, SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}(undef), s, length(s), 14, 0, 0)
         env.state[1] = get_state(env)
         env
     end
@@ -62,7 +62,7 @@ end
 begin  # Optimization hell
     const PORTAL_ROOM = 50
     const CORRECT_DIRECTION = 1
-    const WRONG_DIRECTION = -1
+    const WRONG_DIRECTION = -2
     const CLOSED_EXIT = -5
     const INVALID_EXIT = -10
     # These all return an integer. If it is a scalar function, it returns the scalar. If it is a vector function, it returns the onehot index (1-indexed.)
@@ -102,13 +102,13 @@ begin
         if train_ind > length(train)
             train_ind = 1
         end
-        a = strongholds[train[train_ind]]
+        env.stronghold = strongholds[train[train_ind]]
         env.room = length(env.stronghold)
         env.last_piece = 14
         env.last_exit = 0
         env.entry = 0
         env.reward = 0
-        env.steps = 1
+        env.steps = 0
         env.state[1] = get_state(env)
         return env
     end
@@ -144,6 +144,20 @@ end
 begin
     struct FirstExitPolicy <: AbstractPolicy end
     Reinforce.action(π::FirstExitPolicy, r, s, A) = 1    
+end
+
+struct StrongholdReplayBuffer
+    state::SVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}
+    actions::SVector{MAX_STEPS, Int8}
+    rewards::SVector{MAX_STEPS, Int8}
+    function StrongholdReplayBuffer(env::StrongholdEnvironment, actions, rewards)
+        new(env.state, actions, rewards)
+    end
+end
+
+function Base.iterate(rb::StrongholdReplayBuffer, i=1)
+    (i > MAX_STEPS || rb.actions[i] == -1) && return nothing
+    return (rb.state[1:i], rb.actions[i], rb.rewards[i], rb.state[1:i+1]), i + 1
 end
 
 return
