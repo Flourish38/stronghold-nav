@@ -9,7 +9,7 @@ include("load_strongholds.jl")
 end
 
 begin
-    const MAX_STEPS = 40
+    const MAX_STEPS = 20
     const INPUT_VEC_FORMAT = split(INPUT_VEC_ORDER, ',')
     const STATE_WIDTHS = Dict(
         "CURRENT" => 14,
@@ -94,15 +94,10 @@ end
 begin
     Reinforce.finished(env::StrongholdEnvironment, s′) = current(env).piece == 11
     Reinforce.actions(env::StrongholdEnvironment, s) = 0:5
-    Reinforce.state(env::StrongholdEnvironment) = env.state[1:env.steps]
+    Reinforce.state(env::StrongholdEnvironment) = env.state[1:(env.steps + 1)]
     train_ind = 1
     function Reinforce.reset!(env::StrongholdEnvironment)
-        global train_ind
-        train_ind += 1
-        if train_ind > length(train)
-            train_ind = 1
-        end
-        env.stronghold = strongholds[train[train_ind]]
+        env.stronghold = strongholds[rand(train)]
         env.room = length(env.stronghold)
         env.last_piece = 14
         env.last_exit = 0
@@ -131,7 +126,7 @@ begin
                 env.entry = 0
             end
         end
-        env.state[env.steps] = get_state(env)
+        env.state[env.steps + 1] = get_state(env)
         if current(env).piece == 11
             env.reward = PORTAL_ROOM
         end
@@ -147,7 +142,7 @@ begin
 end
 
 struct StrongholdReplayBuffer
-    state::SVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}
+    state::SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}
     actions::SVector{MAX_STEPS, Int8}
     rewards::SVector{MAX_STEPS, Int8}
     function StrongholdReplayBuffer(env::StrongholdEnvironment, actions, rewards)

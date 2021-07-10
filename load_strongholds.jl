@@ -74,7 +74,7 @@ end
 rec_sizeof(a::AbstractArray) = sizeof(a) + sum(rec_sizeof.(a))
 rec_sizeof(a) = sizeof(a)
 
-@time begin
+function load_strongholds()
     println("Loading Strongholds...")
     strongholds = Vector{Room}[]
     open("data/outputDirections.txt", "r") do io
@@ -97,6 +97,11 @@ rec_sizeof(a) = sizeof(a)
     end
     assignParents!.(strongholds)
     assignCorrectDirection!.(strongholds)
+    return strongholds
+end
+
+begin
+    strongholds = @time load_strongholds()
     train = 1:90000
     dev = 90001:95000
     test = 95001:100000

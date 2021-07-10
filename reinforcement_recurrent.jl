@@ -25,7 +25,7 @@ begin
 end
 
 begin
-    struct QApproximatorPolicy <: AbstractPolicy
+    mutable struct QApproximatorPolicy <: AbstractPolicy
         approximator
         target
         γ
@@ -81,27 +81,26 @@ end
 
 begin  # non-recurrent
     model = Chain(Dense(STATE_WIDTH, 24), Dense(24, 8), Dense(8, 6))
-    qa = QApproximatorPolicy(DeRecurrentApproximator(model), DeRecurrentApproximator(deepcopy(model)), 0.95)
-    nb = NoBacktrackingPolicy(qa)
+    approx = DeRecurrentApproximator(model)
 end
 
 begin  # recurrent
     model = Chain(LSTM(STATE_WIDTH, 24), LSTM(24, 8), Dense(8, 6))
-    qa = QApproximatorPolicy(RecurrentApproximator(model), RecurrentApproximator(deepcopy(model)), 0.95)
+    approx = DeRecurrentApproximator(model)
+end
+
+begin
+    qa = QApproximatorPolicy(approx, deepcopy(approx), 0.95)
     nb = NoBacktrackingPolicy(qa)
-end
-
-begin
-    opt = ADAM()
-    train_ind = 0
     env = StrongholdEnvironment(strongholds[train[1]])
+    opt = ADAM()
 end
 
-begin
+@time begin
     buffer_size = 4000
-    replay_buffer = CircularVectorBuffer{StrongholdReplayBuffer}(4000)
+    replay_buffer = CircularVectorBuffer{StrongholdReplayBuffer}(buffer_size)
     rp = RandomPolicy()
-    @showprogress 1 for i in 1:buffer_size
+    for i in 1:buffer_size
         ep = Episode(env, rp)
         actions = @MVector fill(Int8(-1), MAX_STEPS)
         rewards = @MVector fill(Int8(-1), MAX_STEPS)
@@ -113,26 +112,58 @@ begin
     end
 end
 
-begin
-    eg = EpsilonGreedyPolicy(0.4, qa)
-    @showprogress 1 for i in 1:10000
-        ep = Episode(env, eg)
+
+
+function mean_loss_replay(replay, qa)
+    return mean(loss(qa, s, a + 1, r, s′) for (s, a, r, s′) in replay)
+end
+
+function replay_batch_loss(batch, qa)
+    return sum(mean_loss_replay(replay, qa) for replay in batch)
+end
+
+function train_step!(params, opt, batch, qa)
+    grads = Flux.gradient(params) do 
+        replay_batch_loss(batch, qa)
+    end
+    Flux.Optimise.update!(opt, Flux.params(model), grads)
+end
+
+function update_buffer!(buffer, env, policy, M)
+    for _ in 1:M
+        ep = Episode(env, policy)
+        actions = @MVector fill(Int8(-1), MAX_STEPS)
+        rewards = @MVector fill(Int8(-1), MAX_STEPS)
         for (s, a, r, s′) in ep
-            grads = Flux.gradient(Flux.params(model)) do 
-                loss(qa, s, a + 1, r, s′)
-            end
-            
-            Flux.Optimise.update!(opt, Flux.params(model), grads)
+            actions[env.steps] = a
+            rewards[env.steps] = r
         end
-        if i % 1000 == 0
-            println()
-            sub_dev = rand(dev, 100)
-            println(i, "\t", ep.total_reward, "\t", winrate(qa, sub_dev), "\t", winrate(nb, sub_dev))
-        end
+        push!(buffer, StrongholdReplayBuffer(env, actions, rewards))
     end
 end
 
 begin
+    M = 100
+    K = 25
+    B = 20
+    iters = 0
+    eg = EpsilonGreedyPolicy(0.3, qa)
+    while true
+        iters += 1
+        qa.target = deepcopy(qa.approximator)
+        update_buffer!(replay_buffer, env, eg, M)
+        
+        for i = 1:K
+            batch = rand(replay_buffer, B)
+            train_step!(Flux.params(model), opt, batch, qa)
+        end
+
+        dev_subset = rand(dev, 100)
+        println(iters, "\t", winrate(qa, dev_subset), "\t", winrate(nb, dev_subset), "\t", now())
+    end
+end
+
+@time begin
     println(winrate(qa, dev))
     println(winrate(nb, dev))
     #bson("models/tmp_rl_lstm_$i.bson")
@@ -140,7 +171,7 @@ end
 
 begin
     Flux.reset!(model)
-    env = StrongholdEnvironment(strongholds[dev[3]])
+    env = StrongholdEnvironment(strongholds[dev[1]])
     s = state(env)
     output = model.(s)[end]
     println(argmax(output) - 1, "\t", output)
