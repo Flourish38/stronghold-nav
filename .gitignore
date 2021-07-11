@@ -24,3 +24,5 @@ docs/site/
 Manifest.toml
 
 data/
+models/tmp/
+*.png
