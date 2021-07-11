@@ -253,7 +253,13 @@ begin
 end
 
 begin
-    best_model = BSON.load("models/tmp/rl_recurrent_d_3111.bson")[:rl_model]
+    best_model = load_broken_model("models/rl_recurrent_d_3111.bson")[:rl_model]
+    #mhm = Chain(LSTM(STATE_WIDTH, 64), LSTM(64, 64), Dense(64, 6))
+    #Flux.loadparams!(mhm, Flux.params(best_model))
+    function (m::Flux.LSTMCell{A,V,<:Tuple{AbstractMatrix{T}, Any}})(s, x::SVector{N, T2}) where {A, V, T, N, T2<:Integer}
+        return m(s, SVector{N, T}(x))
+    end
+    #best_model = mhm
     bqa = QApproximatorPolicy(best_model, best_model, 0.95)
     bnb = NoBacktrackingPolicy(bqa)
     beg = EpsilonGreedyPolicy(0.1, bqa)
