@@ -9,7 +9,7 @@ include("load_strongholds.jl")
 end
 
 begin
-    const MAX_STEPS = 20
+    const MAX_STEPS = 80
     const INPUT_VEC_FORMAT = split(INPUT_VEC_ORDER, ',')
     const STATE_WIDTHS = Dict(
         "CURRENT" => 14,

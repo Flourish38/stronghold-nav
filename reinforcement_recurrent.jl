@@ -13,6 +13,7 @@ end
     using Statistics
     using ProgressMeter: @showprogress
     using BenchmarkTools: @benchmark
+    using Plots
 end
 
 begin
@@ -67,7 +68,7 @@ end
 
 function winrate(policy, dataset)
     wins = 0
-    @showprogress 10 for i in dataset
+    #=@showprogress 10=# for i in dataset
         env = StrongholdEnvironment(strongholds[i], false)
         ep = Episode(env, policy)
         for _ in ep
@@ -89,11 +90,22 @@ begin  # recurrent
     #approx = DeRecurrentApproximator(model)
 end
 
+begin  # load model
+    loaded_bson = BSON.load("models/tmp/rl_recurrent_d_1075.bson")
+    model = loaded_bson[:rl_model]
+end
+
 begin
     qa = QApproximatorPolicy(model, deepcopy(model), 0.95)
     nb = NoBacktrackingPolicy(qa)
     env = StrongholdEnvironment(strongholds[train[1]])
     opt = ADAM()
+    iters = 0
+end
+
+begin
+    opt = loaded_bson[:adam]
+    iters = loaded_bson[:iters]
 end
 
 function update_buffer!(buffer, env, policy, M)
@@ -114,11 +126,13 @@ function update_buffer!(buffer, env, policy, M)
 end
 
 @time begin
-    buffer_size = 20000
+    buffer_size = 10000
     replay_buffer = CircularVectorBuffer{StrongholdReplayBuffer}(buffer_size)
     rp = RandomPolicy()
-    best_dev_winrate = 0
-    update_buffer!(replay_buffer, env, rp, buffer_size)
+    best_dev_winrate = winrate(qa, dev)
+    eg = EpsilonGreedyPolicy(0.1, qa)
+    #update_buffer!(replay_buffer, env, rp, buffer_size)
+    update_buffer!(replay_buffer, env, eg, buffer_size)
 end
 
 function mean_loss_replay(replay, qa)
@@ -148,11 +162,12 @@ function train_step!(params, opt, batch, qa)
 end
 
 begin
-    M = 200
-    K = 200
+    update_interval = Minute(10)
+    M = 100
+    K = 10
     B = M ÷ K
-    iters = 0
-    eg = EpsilonGreedyPolicy(0.3, qa)
+    Reinforce.maxsteps(env::StrongholdEnvironment) = MAX_STEPS
+    next_time = now() + update_interval
     while true
         iters += 1
         qa.target = deepcopy(qa.approximator)
@@ -162,16 +177,33 @@ begin
             batch = rand(replay_buffer, B)
             train_step!(Flux.params(model), opt, batch, qa)
         end
+        
+        if now() > next_time
+            println(iters, "\t", now())
+            next_time = now() + update_interval
+        end
 
-        if iters % 10 == 0
+        dev_subset = rand(dev, 100)
+        subset_winrate = winrate(qa, dev_subset)
+        if subset_winrate >= best_dev_winrate
             w = winrate(qa, dev)
-            println(iters, "\t", w, "\t", now())
+            println(iters, "\t", subset_winrate, "\t", w)
             if w > best_dev_winrate
                 println("New best! +", w - best_dev_winrate)
                 best_dev_winrate = w
-                bson("models/tmp_rl_recurrent_a_$iters.bson", rl_stateless_model = model)
+                bson("models/tmp/rl_recurrent_d_$iters.bson", rl_model = model, adam = opt, iters = iters)
             end
         end
+    end
+end
+
+begin  # When you interrupt it and it would have maybe saved, do this
+    w = winrate(qa, dev)
+    println(iters, "\t", w)
+    if w > best_dev_winrate
+        println("New best! +", w - best_dev_winrate)
+        best_dev_winrate = w
+        bson("models/tmp/rl_recurrent_d_$iters.bson", rl_model = model, adam = opt, iters = iters)
     end
 end
 
@@ -181,31 +213,70 @@ end
     println(winrate(eg, dev))
 end
 
+function win_distribution(policy, dataset)
+    wins = 0
+    distribution = Int[]
+    @showprogress 1 for i in dataset
+        env = StrongholdEnvironment(strongholds[i], false)
+        ep = Episode(env, policy)
+        for _ in ep
+        end
+        if finished(env, 0)
+            wins += 1
+            push!(distribution, env.steps)
+            @assert length(distribution) == wins
+        end
+    end
+    return distribution
+end
+
 begin
-    best_model = BSON.load("models/rl_stateless_293.bson")[:rl_stateless_model]
+    Reinforce.maxsteps(env::StrongholdEnvironment) = 200
+    distr = win_distribution(bqa, dev)
+end
+
+begin
+    r = 1:100#maxsteps(env)
+    y_graph = [sum(distr .== x) for x in r]
+    Plots.bar(r, y_graph)
+    xlabel!("# Steps to find portal room")
+    ylabel!("Count")
+    Plots.savefig("win_distribution.png")
+end
+
+begin
+    y_graph_cumulative = [sum(y_graph[1:x]) for x in r] ./ length(dev)
+    Plots.bar(r, y_graph_cumulative)
+    xlabel!("# Steps to find portal room")
+    ylabel!("Success rate (cumulative)")
+    Plots.savefig("win_cumulative.png")
+end
+
+begin
+    best_model = BSON.load("models/tmp/rl_recurrent_d_3111.bson")[:rl_model]
     bqa = QApproximatorPolicy(best_model, best_model, 0.95)
     bnb = NoBacktrackingPolicy(bqa)
     beg = EpsilonGreedyPolicy(0.1, bqa)
-    Reinforce.maxsteps(env::StrongholdEnvironment) = 20
+    Reinforce.maxsteps(env::StrongholdEnvironment) = MAX_STEPS
 end
 
 begin
-    println(winrate(bqa, test))
-    println(winrate(bnb, test))    
-    println(winrate(beg, test))
+    println(winrate(bqa, dev))
+    println(winrate(bnb, dev))    
+    println(winrate(beg, dev))
 end
 
 begin
-    Flux.reset!(best_model)
-    env = StrongholdEnvironment(strongholds[test[2]], false)
+    Flux.reset!(model)
+    env = StrongholdEnvironment(strongholds[dev[10]], false)
     s = state(env)
-    output = best_model(s)
+    output = model(s)
     println(argmax(output) - 1, "\t", output)
 end
 
 begin
     r, s = step!(env, s, argmax(output) - 1)
     @show r, s
-    output = best_model(s)
+    output = model(s)
     println(argmax(output) - 1, "\t", output)
 end
