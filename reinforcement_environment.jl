@@ -9,7 +9,7 @@ include("load_strongholds.jl")
 end
 
 begin
-    const MAX_STEPS = 80
+    const MAX_STEPS = 50
     const INPUT_VEC_FORMAT = split(INPUT_VEC_ORDER, ',')
     const STATE_WIDTHS = Dict(
         "CURRENT" => 14,
@@ -35,17 +35,21 @@ mutable struct StrongholdEnvironment <: AbstractEnvironment
     resettable::Bool
     reward::Float64
     steps::Int
-    state::SVector{STATE_WIDTH, Int8}
+    state::SVector{STATE_WIDTH, Float32}
     stronghold::Vector{Room}
     room::Int16
     last_piece::Int8
     last_exit::Int8
     entry::Int8
-    function StrongholdEnvironment(s::Vector{Room}, r = true)
-        env = new(r, 0, 0, (@SVector zeros(STATE_WIDTH)), s, length(s), 14, 0, 0)
+    function StrongholdEnvironment(s::Vector{Room}, r::Bool = true)
+        env = new(r, 0, 0, (@SVector zeros(Float32, STATE_WIDTH)), s, length(s), 14, 0, 0)
         env.state = get_state(env)
         env
     end
+end
+
+function StrongholdEnvironment(r::Bool = true)
+    return StrongholdEnvironment(strongholds[rand(train)], r)
 end
 
 begin
@@ -61,11 +65,12 @@ end
 
 
 begin  # Optimization hell
-    const PORTAL_ROOM = 50
-    const CORRECT_DIRECTION = 1
-    const WRONG_DIRECTION = -2
-    const CLOSED_EXIT = -5
-    const INVALID_EXIT = -10
+    const PORTAL_ROOM = 50.
+    const CORRECT_DIRECTION = -1.
+    const WRONG_DIRECTION = -1.
+    const STUPID_ROOM = -50.
+    const CLOSED_EXIT = -50.
+    const INVALID_EXIT = -100.
     # These all return an integer. If it is a scalar function, it returns the scalar. If it is a vector function, it returns the onehot index (1-indexed.)
     const STATE_FUNCTIONS = Dict(
         "CURRENT" => (env::StrongholdEnvironment, c::Room) -> c.piece,
@@ -129,8 +134,11 @@ begin
             end
         end
         env.state = get_state(env)
+        c = current(env)
         if current(env).piece == 11
             env.reward = PORTAL_ROOM
+        elseif c.piece > 9
+            env.reward = min(env.reward, STUPID_ROOM)
         end
         return reward(env), state(env)
     end
@@ -144,7 +152,7 @@ begin
 end
 
 struct StrongholdReplayBuffer
-    states::SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}
+    states::SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Float32}}
     actions::SVector{MAX_STEPS, Int8}
     rewards::SVector{MAX_STEPS, Int8}
 end
