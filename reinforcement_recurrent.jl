@@ -1,4 +1,3 @@
-using BSON: Threads
 begin
     const INPUT_VEC_ORDER = "DEPTH,DIRECTION,ENTRY,PREV_EXIT_INDEX_COMPAT,CURRENT,PARENT_ROOM,EXIT_1,EXIT_2,EXIT_3,EXIT_4,EXIT_5" # DEPTH,
     @time include("reinforcement_environment.jl")
@@ -142,7 +141,7 @@ begin  # recurrent
 end
 
 begin  # load model
-    loaded_bson = BSON.load("models/tmp/rl_stateless_a_11910.bson")
+    loaded_bson = BSON.load("models/rl_rnn_1.bson")
     model = loaded_bson[:rl_model]
 end
 
