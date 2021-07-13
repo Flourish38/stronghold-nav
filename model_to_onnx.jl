@@ -2,25 +2,9 @@
     println("Loading packages...")
     using Flux
     using BSON
-    using BSON: @load
-    using ONNXmutable
 end
 
-println("yea")
-
-bson("prayer.bson", BSON.parse("models/rl_recurrent_d_3111.bson"))
-BSON.load("prayer.bson")
-
-begin
-    oh_no = BSON.parse("models/rl_recurrent_d_3111.bson")
-    lstm_1 = oh_no[:rl_model][:data][1][:data][1][:data][2]
-end
-
-begin
-    oh_ok = BSON.parse("test.bson")
-    lstm_a = oh_ok[:yea][:data][1][:data][1][:data][1]
-end
-
+# This is because Flux changed the way LSTM is represented in an update that ONNXmutable forced me to download, whatever I migrated to it fine
 function load_broken_model(path)
     brok = BSON.parse(path)
     layers = []
@@ -38,6 +22,8 @@ function load_broken_model(path)
     return Dict(:rl_model => Chain(layers...), :adam => BSON.raise_recursive(brok[:adam], Main))
 end
 
+#=
+# None of this was helpful, it uses the ONNXmutable package if you're curious
 begin
     path = "models/tmp/"
     for fname in readdir(path)
@@ -50,3 +36,9 @@ begin
     model = BSON.load("models/fixed_rl_recurrent_d_3111.bson")[:rl_model]
     onnx("test.onnx", model)
 end
+
+begin
+    graph = CompGraph("test.onnx")
+    graph(@SVector ones(Int8, 115))
+end
+=#

@@ -91,7 +91,7 @@ begin  # recurrent
 end
 
 begin  # load model
-    loaded_bson = BSON.load("models/tmp/rl_recurrent_d_1075.bson")
+    loaded_bson = BSON.load("models/tmp/rl_stateless_a_11910.bson")
     model = loaded_bson[:rl_model]
 end
 
@@ -191,7 +191,7 @@ begin
             if w > best_dev_winrate
                 println("New best! +", w - best_dev_winrate)
                 best_dev_winrate = w
-                bson("models/tmp/rl_recurrent_d_$iters.bson", rl_model = model, adam = opt, iters = iters)
+                bson("models/tmp/rl_stateless_a_$iters.bson", rl_model = model, adam = opt, iters = iters)
             end
         end
     end
@@ -214,29 +214,31 @@ end
 end
 
 function win_distribution(policy, dataset)
-    wins = 0
     distribution = Int[]
+    max_steps_win = 0
     @showprogress 1 for i in dataset
         env = StrongholdEnvironment(strongholds[i], false)
         ep = Episode(env, policy)
         for _ in ep
         end
         if finished(env, 0)
-            wins += 1
             push!(distribution, env.steps)
-            @assert length(distribution) == wins
+            if env.steps > max_steps_win
+                #println(i, "\t", env.steps)
+                max_steps_win = env.steps
+            end
         end
     end
     return distribution
 end
 
 begin
-    Reinforce.maxsteps(env::StrongholdEnvironment) = 200
-    distr = win_distribution(bqa, dev)
+    Reinforce.maxsteps(env::StrongholdEnvironment) = 80
+    distr = win_distribution(qa, dev)
 end
 
 begin
-    r = 1:100#maxsteps(env)
+    r = 1:80#maxsteps(env)
     y_graph = [sum(distr .== x) for x in r]
     Plots.bar(r, y_graph)
     xlabel!("# Steps to find portal room")
