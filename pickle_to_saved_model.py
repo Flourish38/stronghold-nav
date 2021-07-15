@@ -8,9 +8,9 @@ def load_pickle(path):
         obj = pickle.load(f)
     return obj
 
-lstm1 = load_pickle("lstm1.pickle")
-lstm2 = load_pickle("lstm2.pickle")
-dense = load_pickle("dense.pickle")
+lstm1 = load_pickle("models/tmp/lstm1.pickle")
+lstm2 = load_pickle("models/tmp/lstm2.pickle")
+dense = load_pickle("models/tmp/dense.pickle")
 
 class ISLSTM(tf.keras.layers.LSTM):
     def __init__(self, in_units, units, initial_states, return_sequences=False):
@@ -49,4 +49,4 @@ model = tf.keras.Sequential([
 input = np.random.randn(1, 1, 115)
 model(input)
 model.reset_states()
-model.save("models/rl_rnn_1/model")
+model.save("models/rl_rnn_2/model")

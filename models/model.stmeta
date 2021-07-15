@@ -1,6 +1,6 @@
 stmeta 1.0
 creator="Flourish"
-id="rl_rnn_1"
+id="rl_rnn_2"
 input_shape=[-1,-1,115]
 input_vec_order=DEPTH,DIRECTION,ENTRY,PREV_EXIT_INDEX_COMPAT,CURRENT,PARENT_ROOM,EXIT_1,EXIT_2,EXIT_3,EXIT_4,EXIT_5
 redefine(ROOM_TO_VECTOR)=COR,PRI,LEF,RIG,SQU,STA,SPI,FIV,CHE,LIB,POR,SMA,SPI*,NUL

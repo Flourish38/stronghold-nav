@@ -78,7 +78,7 @@ begin  # save non-recurrent model
 end
 
 begin  # pickle recurrent model for processing in pickle_to_saved_model.py
-    model = BSON.load("models/rl_rnn_1.bson")[:rl_model]
+    model = BSON.load("models/tmp/rl_recurrent_f_7946.bson")[:rl_model]
     cell_to_pickle(model[1].cell, "models/tmp/lstm1.pickle")
     cell_to_pickle(model[2].cell, "models/tmp/lstm2.pickle")
     cell_to_pickle(model[3], "models/tmp/dense.pickle")

@@ -55,6 +55,32 @@ begin
 end
 
 begin
+    mutable struct OccasionalOraclePolicy{P<:AbstractPolicy} <: AbstractPolicy
+        state::Int
+        chance::Float64
+        p::P
+        env::Union{Nothing, StrongholdEnvironment}
+        function OccasionalOraclePolicy(chance, p::P) where P<:AbstractPolicy
+            new{P}(0, chance, p, nothing)
+        end
+    end
+    function Reinforce.reset!(oo::OccasionalOraclePolicy) 
+        oo.state = 0
+        reset!(oo.p)
+    end
+    function Reinforce.action(oo::OccasionalOraclePolicy, r, s, A)
+        if oo.state == 1
+            return current(oo.env).correctDirection
+        elseif rand() < oo.chance
+            oo.state = 1
+            return action(oo, r, s, A)
+        else
+            return action(oo.p, r, s, A)
+        end
+    end
+end
+
+begin
     struct MultiThreadPolicy{P<:AbstractPolicy} <: AbstractPolicy
         ps::Vector{P}
         function MultiThreadPolicy(p::P) where P<:AbstractPolicy
@@ -141,7 +167,7 @@ begin  # recurrent
 end
 
 begin  # load model
-    loaded_bson = BSON.load("models/rl_rnn_1.bson")
+    loaded_bson = BSON.load("models/tmp/rl_recurrent_e_7668.bson")
     model = loaded_bson[:rl_model]
 end
 
@@ -158,10 +184,10 @@ begin
     iters = loaded_bson[:iters]
 end
 
-function update_buffer!(buffer::CircularVectorBuffer{StrongholdReplayBuffer}, env, policy, M)
+function update_buffer!(buffer::CircularVectorBuffer{StrongholdReplayBuffer}, env, p, M)
     env.resettable = true
     for _ in 1:M
-        ep = Episode(env, policy)
+        ep = Episode(env, p)
         states = SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}(undef)
         states[1] = state(env)
         actions = @MVector fill(Int8(-1), MAX_STEPS)
@@ -175,11 +201,14 @@ function update_buffer!(buffer::CircularVectorBuffer{StrongholdReplayBuffer}, en
     end
 end
 
-function update_buffer!(buffer::CircularVectorBuffer{StrongholdReplayBuffer}, _, policy::MultiThreadPolicy, M)
+function update_buffer!(buffer::CircularVectorBuffer{StrongholdReplayBuffer}, _, p::MultiThreadPolicy, M)
     temp = SizedVector{M, StrongholdReplayBuffer}(undef)
     Threads.@threads for i in 1:M
         env = StrongholdEnvironment()
-        ep = Episode(env, policy)
+        if typeof(policy(p)) <: OccasionalOraclePolicy
+            policy(p).env = env
+        end
+        ep = Episode(env, p)
         states = SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Int8}}(undef)
         states[1] = state(env)
         actions = @MVector fill(Int8(-1), MAX_STEPS)
@@ -196,14 +225,19 @@ function update_buffer!(buffer::CircularVectorBuffer{StrongholdReplayBuffer}, _,
     end
 end
 
-begin
+@time begin
     buffer_size = 10000
     replay_buffer = CircularVectorBuffer{StrongholdReplayBuffer}(buffer_size)
     rp = RandomPolicy()
-    best_dev_winrate = @time winrate(MultiThreadPolicy(qa), dev)
-    eg = EpsilonGreedyPolicy(0.02, qa)
+    best_dev_winrate = winrate(MultiThreadPolicy(qa), dev)
     #update_buffer!(replay_buffer, env, rp, buffer_size)
-    @time update_buffer!(replay_buffer, env, MultiThreadPolicy(eg), buffer_size)
+end
+
+begin
+    eg = EpsilonGreedyPolicy(0.02, qa)
+    oo = OccasionalOraclePolicy(0.0002, eg)
+    Reinforce.maxsteps(env::StrongholdEnvironment) = MAX_STEPS
+    update_buffer!(replay_buffer, env, MultiThreadPolicy(oo), buffer_size)
 end
 
 function mean_loss_replay(replay, qa)
@@ -254,20 +288,7 @@ function train_step_mt!(params, opt, batch, qa)
     Flux.Optimise.update!(opt, params, grads)
 end
 
-@time begin
-    mt = MultiThreadPolicy(qa)
-    temp = Vector{Flux.Zygote.Grads}(undef, 4)
-    k = length(batch)/Threads.nthreads()
-    Threads. @threads for i in 0:k:length(batch)-1
-        p = policy(mt)
-        sub_batch = batch[ceil(Int, 1+i):ceil(Int, k+i)]
-        temp[Threads.threadid()] = Flux.gradient(Flux.params(p.approximator)) do 
-            replay_batch_loss(sub_batch, p)
-        end
-    end
-end
-
-function training_loop(M, K, B, update_interval, qa::QApproximatorPolicy, eg::EpsilonGreedyPolicy{QApproximatorPolicy}, model, opt, replay_buffer::CircularVectorBuffer{StrongholdReplayBuffer})
+function training_loop(M, K, B, update_interval, qa::QApproximatorPolicy, eg, model, opt, replay_buffer::CircularVectorBuffer{StrongholdReplayBuffer})
     global best_dev_winrate, dev, iters
     next_time = now() + update_interval
     while true
@@ -277,25 +298,25 @@ function training_loop(M, K, B, update_interval, qa::QApproximatorPolicy, eg::Ep
         
         for i = 1:K
             batch = rand(replay_buffer, B)
-            train_step_mt!(Flux.params(model), opt, batch, qa)
-            GC.gc(false)
-        end
-        
-        if now() > next_time
-            println(iters, "\t", now())
-            next_time = now() + update_interval
+            train_step!(Flux.params(model), opt, batch, qa)
         end
         
         mt = MultiThreadPolicy(qa)
         dev_subset = rand(dev, 100)
         subset_winrate = winrate(mt, dev_subset)
+        
+        if now() > next_time
+            println(iters, "\t", subset_winrate, "\t", now())
+            next_time = now() + update_interval
+        end
+
         if subset_winrate >= best_dev_winrate
             w = winrate(mt, dev)
             println(iters, "\t", subset_winrate, "\t", w)
             if w > best_dev_winrate
                 println("New best! +", w - best_dev_winrate)
                 best_dev_winrate = w
-                bson("models/tmp/rl_stateless_a_$iters.bson", rl_model = model, adam = opt, iters = iters)
+                bson("models/tmp/rl_recurrent_f_$iters.bson", rl_model = model, adam = opt, iters = iters)
             end
         end
     end
@@ -303,11 +324,10 @@ end
 
 begin
     update_interval = Minute(10)
-    M = 100
-    B = Threads.nthreads() * 1
-    K = M ÷ B
-    Reinforce.maxsteps(env::StrongholdEnvironment) = MAX_STEPS
-    training_loop(M, K, B, update_interval, qa, eg, model, opt, replay_buffer)
+    M = 120
+    K = 8
+    B = M ÷ K
+    training_loop(M, K, B, update_interval, qa, oo, model, opt, replay_buffer)
 end
 
 begin  # When you interrupt it and it would have maybe saved, do this
@@ -316,14 +336,14 @@ begin  # When you interrupt it and it would have maybe saved, do this
     if w > best_dev_winrate
         println("New best! +", w - best_dev_winrate)
         best_dev_winrate = w
-        bson("models/tmp/rl_recurrent_d_$iters.bson", rl_model = model, adam = opt, iters = iters)
+        bson("models/tmp/rl_recurrent_e_$iters.bson", rl_model = model, adam = opt, iters = iters)
     end
 end
 
 @time begin
-    println(winrate(qa, dev))
-    println(winrate(nb, dev))
-    println(winrate(eg, dev))
+    println(winrate(MultiThreadPolicy(qa), dev))
+    println(winrate(MultiThreadPolicy(nb), dev))
+    println(winrate(MultiThreadPolicy(eg), dev))
 end
 
 function win_distribution(policy, dataset)
@@ -337,7 +357,7 @@ function win_distribution(policy, dataset)
         if finished(env, 0)
             push!(distribution, env.steps)
             if env.steps > max_steps_win
-                #println(i, "\t", env.steps)
+                println(i, "\t", env.steps)
                 max_steps_win = env.steps
             end
         end
@@ -346,14 +366,14 @@ function win_distribution(policy, dataset)
 end
 
 begin
-    Reinforce.maxsteps(env::StrongholdEnvironment) = 80
-    distr = win_distribution(qa, dev)
+    Reinforce.maxsteps(env::StrongholdEnvironment) = 100
+    distr = win_distribution(bqa, dev)
 end
 
 begin
-    r = 1:80#maxsteps(env)
-    y_graph = [sum(distr .== x) for x in r]
-    Plots.bar(r, y_graph)
+    r = 1:100#maxsteps(env)
+    y_graph = [sum(distr .== x) for x in eachindex(distr)]
+    Plots.bar(r, y_graph[r])
     xlabel!("# Steps to find portal room")
     ylabel!("Count")
     Plots.savefig("win_distribution.png")
@@ -361,40 +381,40 @@ end
 
 begin
     y_graph_cumulative = [sum(y_graph[1:x]) for x in r] ./ length(dev)
-    Plots.bar(r, y_graph_cumulative)
+    Plots.bar(r, y_graph_cumulative[r])
     xlabel!("# Steps to find portal room")
     ylabel!("Success rate (cumulative)")
     Plots.savefig("win_cumulative.png")
 end
 
 begin
-    best_model = BSON.load("models/rl_rnn_1.bson")[:rl_model]
+    best_model = BSON.load("models/tmp/rl_recurrent_f_7946.bson")[:rl_model]
     #mhm = Chain(LSTM(STATE_WIDTH, 64), LSTM(64, 64), Dense(64, 6))
     #Flux.loadparams!(mhm, Flux.params(best_model))
     #best_model = mhm
     bqa = QApproximatorPolicy(best_model, best_model, 0.95)
     bnb = NoBacktrackingPolicy(bqa)
-    beg = EpsilonGreedyPolicy(0.1, bqa)
-    Reinforce.maxsteps(env::StrongholdEnvironment) = MAX_STEPS
+    beg = EpsilonGreedyPolicy(0.02, bqa)
+    Reinforce.maxsteps(env::StrongholdEnvironment) = 200
 end
 
 begin
-    println(winrate(bqa, dev))
-    println(winrate(bnb, dev))    
-    println(winrate(beg, dev))
+    println(winrate(MultiThreadPolicy(bqa), dev))
+    println(winrate(MultiThreadPolicy(bnb), dev))
+    println(winrate(MultiThreadPolicy(beg), dev))
 end
 
 begin
-    Flux.reset!(model)
-    env = StrongholdEnvironment(strongholds[dev[10]], false)
+    Flux.reset!(best_model)
+    env = StrongholdEnvironment(strongholds[dev[3]], false)
     s = state(env)
-    output = model(s)
+    output = best_model(s)
     println(argmax(output) - 1, "\t", output)
 end
 
 begin
     r, s = step!(env, s, argmax(output) - 1)
     @show r, s
-    output = model(s)
+    output = best_model(s)
     println(argmax(output) - 1, "\t", output)
 end
