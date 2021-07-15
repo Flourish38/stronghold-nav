@@ -71,7 +71,7 @@ begin
     function Reinforce.action(oo::OccasionalOraclePolicy, r, s, A)
         if oo.state == 1
             return current(oo.env).correctDirection
-        elseif rand() < oo.chance
+        elseif rand() * (oo.env.steps + 1) < oo.chance
             oo.state = 1
             return action(oo, r, s, A)
         else
@@ -142,11 +142,14 @@ function winrate(policy, dataset)
     return wins / length(dataset)
 end
 
-function winrate(policy::MultiThreadPolicy, dataset)
+function winrate(p::MultiThreadPolicy, dataset)
     wins = Threads.Atomic{Int}(0)
     Threads.@threads for i in dataset
         env = StrongholdEnvironment(strongholds[i], false)
-        ep = Episode(env, policy)
+        if typeof(policy(p)) <: OccasionalOraclePolicy
+            policy(p).env = env
+        end
+        ep = Episode(env, p)
         for _ in ep
         end
         if finished(env, 0)
@@ -167,7 +170,7 @@ begin  # recurrent
 end
 
 begin  # load model
-    loaded_bson = BSON.load("models/tmp/rl_recurrent_e_7668.bson")
+    loaded_bson = BSON.load("models/tmp/rl_rnn_h_7956.bson")
     model = loaded_bson[:rl_model]
 end
 
@@ -235,7 +238,8 @@ end
 
 begin
     eg = EpsilonGreedyPolicy(0.02, qa)
-    oo = OccasionalOraclePolicy(0.0002, eg)
+    #oo = OccasionalOraclePolicy(0.006, eg)
+    oo = OccasionalOraclePolicy(1, FirstExitPolicy())
     Reinforce.maxsteps(env::StrongholdEnvironment) = MAX_STEPS
     update_buffer!(replay_buffer, env, MultiThreadPolicy(oo), buffer_size)
 end
@@ -310,22 +314,22 @@ function training_loop(M, K, B, update_interval, qa::QApproximatorPolicy, eg, mo
             next_time = now() + update_interval
         end
 
-        if subset_winrate >= best_dev_winrate
+        #if subset_winrate >= best_dev_winrate
             w = winrate(mt, dev)
             println(iters, "\t", subset_winrate, "\t", w)
             if w > best_dev_winrate
                 println("New best! +", w - best_dev_winrate)
                 best_dev_winrate = w
-                bson("models/tmp/rl_recurrent_f_$iters.bson", rl_model = model, adam = opt, iters = iters)
+                bson("models/tmp/rl_rnn_j7_$iters.bson", rl_model = model, adam = opt, iters = iters)
             end
-        end
+        #end
     end
 end
 
 begin
     update_interval = Minute(10)
-    M = 120
-    K = 8
+    M = 100
+    K = 1
     B = M ÷ K
     training_loop(M, K, B, update_interval, qa, oo, model, opt, replay_buffer)
 end
@@ -366,13 +370,14 @@ function win_distribution(policy, dataset)
 end
 
 begin
-    Reinforce.maxsteps(env::StrongholdEnvironment) = 100
+    Reinforce.maxsteps(env::StrongholdEnvironment) = 200
     distr = win_distribution(bqa, dev)
+    y_graph = [sum(distr .== x) for x in 1:maxsteps(env)]
+    y_graph_cumulative = [sum(y_graph[1:x]) for x in 1:maxsteps(env)] ./ length(dev)
 end
 
 begin
     r = 1:100#maxsteps(env)
-    y_graph = [sum(distr .== x) for x in eachindex(distr)]
     Plots.bar(r, y_graph[r])
     xlabel!("# Steps to find portal room")
     ylabel!("Count")
@@ -380,7 +385,6 @@ begin
 end
 
 begin
-    y_graph_cumulative = [sum(y_graph[1:x]) for x in r] ./ length(dev)
     Plots.bar(r, y_graph_cumulative[r])
     xlabel!("# Steps to find portal room")
     ylabel!("Success rate (cumulative)")
@@ -388,19 +392,19 @@ begin
 end
 
 begin
-    best_model = BSON.load("models/tmp/rl_recurrent_f_7946.bson")[:rl_model]
+    best_model = BSON.load("models/tmp/rl_rnn_j7_7959.bson")[:rl_model]
     #mhm = Chain(LSTM(STATE_WIDTH, 64), LSTM(64, 64), Dense(64, 6))
     #Flux.loadparams!(mhm, Flux.params(best_model))
     #best_model = mhm
     bqa = QApproximatorPolicy(best_model, best_model, 0.95)
     bnb = NoBacktrackingPolicy(bqa)
     beg = EpsilonGreedyPolicy(0.02, bqa)
-    Reinforce.maxsteps(env::StrongholdEnvironment) = 200
+    Reinforce.maxsteps(env::StrongholdEnvironment) = 400
 end
 
 begin
     println(winrate(MultiThreadPolicy(bqa), dev))
-    println(winrate(MultiThreadPolicy(bnb), dev))
+    #println(winrate(MultiThreadPolicy(bnb), dev))
     println(winrate(MultiThreadPolicy(beg), dev))
 end
 

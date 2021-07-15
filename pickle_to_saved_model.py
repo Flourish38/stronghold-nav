@@ -49,4 +49,4 @@ model = tf.keras.Sequential([
 input = np.random.randn(1, 1, 115)
 model(input)
 model.reset_states()
-model.save("models/rl_rnn_2/model")
+model.save("models/rl_rnn_3/model")
