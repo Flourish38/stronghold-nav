@@ -8,22 +8,9 @@
     pickle = pyimport("pickle")
 end
 
-begin
-end
-
-begin
-    
-end
-
-begin
-    input = rand(1, 1, 115)
-end
-
-begin
-    lstm = tf.keras.layers.LSTM(64, stateful=true)
-    lstm(input)
-end
-
+# Doesn't work. Since tensorflow LSTMs by default do not support custom initial state,
+# a custom class is required, and doing that through PyCall is too much work.
+# It is easier to pickle the matrices and handle things on the python side.
 function lstm_to_tensorflow(lstm_cell, ret)
     input = ones(1, 1, size(lstm_cell.Wi, 2))
     lstm = tf.keras.layers.LSTM(size(lstm_cell.Wh, 2), return_sequences=ret, stateful=true)
@@ -41,13 +28,15 @@ function lstm_to_tensorflow(lstm_cell, ret)
     return lstm
 end
 
+# Basic general pickler, should work with most cell types but definitely works with Dense and LSTM
 function cell_to_pickle(cell, path)
     output = Dict()
     for fn in fieldnames(typeof(cell))
         x = getfield(cell, fn)
+        # Have to transpose the matrices because julia is column-first and python is row-first
         if typeof(x) <: AbstractMatrix
             output[String(fn)] = transpose(x)
-        elseif typeof(x) <: Union{AbstractVector, Tuple}
+        elseif typeof(x) <: Union{AbstractVector, Tuple}  # LSTMs have 2 state variables, they are stored in one field
             output[String(fn)] = transpose.(x)
         end
     end
@@ -56,6 +45,7 @@ function cell_to_pickle(cell, path)
     end
 end
 
+# If your model is not recurrent, you can just use this
 function dense_to_tensorflow(dense)
     input = ones(1, size(dense.W, 2))
     fc = tf.keras.layers.Dense(size(dense.W, 1))
@@ -66,20 +56,22 @@ function dense_to_tensorflow(dense)
 end
 
 begin  # save non-recurrent model
-    model = BSON.load("models/tmp/rl_stateless_a_11910.bson")[:rl_model]
+    saving_model = BSON.load("models/tmp/rl_recurrent_e_131.bson")[:rl_model]
     tf_model = tf.keras.Sequential([
-        dense_to_tensorflow(model[1]),
-        dense_to_tensorflow(model[2]),
-        dense_to_tensorflow(model[3])
+        dense_to_tensorflow(saving_model[1]),
+        dense_to_tensorflow(saving_model[2]),
+        dense_to_tensorflow(saving_model[3])
     ])
+    
     input = rand(1, 115)
-    tf_model(input)
-    tf_model.save("models/rl_stateless_2/model")
+    tf_model(input)  # This "compiles" the model, which is necessary in order to save it
+
+    tf_model.save("models/rl_stateless_3/model")
 end
 
 begin  # pickle recurrent model for processing in pickle_to_saved_model.py
-    model = BSON.load("models/tmp/rl_rnn_j7_7959.bson")[:rl_model]
-    cell_to_pickle(model[1].cell, "models/tmp/lstm1.pickle")
-    cell_to_pickle(model[2].cell, "models/tmp/lstm2.pickle")
-    cell_to_pickle(model[3], "models/tmp/dense.pickle")
+    saving_model = BSON.load("models/tmp/rl_rnn_a2_19406.bson")[:rl_model]
+    cell_to_pickle(saving_model[1].cell, "models/tmp/lstm1.pickle")
+    cell_to_pickle(saving_model[2].cell, "models/tmp/lstm2.pickle")
+    cell_to_pickle(saving_model[3], "models/tmp/dense.pickle")
 end

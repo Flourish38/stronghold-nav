@@ -11,7 +11,7 @@ begin
     const piece_to_num_exits = [3, 1, 1, 1, 3, 1, 1, 5, 1, 0, 0, 0, 1, 0]
 end
 
-mutable struct Room
+mutable struct Room  # Very space-optimized; must be mutable to assign parent, depth, and correctDirection later.
     exits::SVector{5, Int16}
     piece::Int8
     orientation::Int8
@@ -28,7 +28,7 @@ end
 
 valid_exits(r::Room) = vcat(r.parent > 0 ? [0] : [], (1:5)[r.exits .> 0])
 
-function assignParents!(stronghold)
+function assignParents!(stronghold)  # Standard tree flood from root algorithm
     queue = Set{Int}()
     n = length(stronghold)
     r = stronghold[n]
@@ -49,7 +49,7 @@ function assignParents!(stronghold)
     end
 end
 
-function assignCorrectDirection!(stronghold)
+function assignCorrectDirection!(stronghold)  # Tree flood, this time from portal room (leaf)
     queue = Set{Int}()
     n = findfirst(r -> r.piece == 11, stronghold)
     stronghold[n].correctDirection = 0

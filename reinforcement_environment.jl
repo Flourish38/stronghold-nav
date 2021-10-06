@@ -1,3 +1,4 @@
+# INPUT_VEC_ORDER must be defined before including this file
 println(INPUT_VEC_ORDER)
 
 include("load_strongholds.jl")
@@ -9,7 +10,7 @@ include("load_strongholds.jl")
 end
 
 begin
-    const MAX_STEPS = 100
+    const MAX_STEPS = 50
     const INPUT_VEC_FORMAT = split(INPUT_VEC_ORDER, ',')
     const STATE_WIDTHS = Dict(
         "CURRENT" => 14,
@@ -36,13 +37,17 @@ mutable struct StrongholdEnvironment <: AbstractEnvironment
     reward::Float64
     steps::Int
     state::SVector{STATE_WIDTH, Float32}
+    visited_rooms::Vector{Bool}
     stronghold::Vector{Room}
     room::Int16
     last_piece::Int8
     last_exit::Int8
     entry::Int8
-    function StrongholdEnvironment(s::Vector{Room}, r::Bool = true)
-        env = new(r, 0, 0, (@SVector zeros(Float32, STATE_WIDTH)), s, length(s), 14, 0, 0)
+    target_piece::Int8
+    function StrongholdEnvironment(s::Vector{Room}, r::Bool = true, target_piece::Int8=Int8(11))
+        # This assumes you start in the portal room if you want to go anywhere else (pre-1.9 mode)
+        room::Int16 = target_piece == 11 ? length(s) : findfirst(x -> x.piece == 11, s)
+        env = new(r, 0, 0, (@SVector zeros(Float32, STATE_WIDTH)), zeros(Bool, length(s)), s, room, 14, 0, 0, target_piece)
         env.state = get_state(env)
         env
     end
@@ -65,12 +70,13 @@ end
 
 
 begin  # Optimization hell
-    const PORTAL_ROOM = 50.
-    const CORRECT_DIRECTION = -1.
+    const TARGET_ROOM = 50.
+    const CORRECT_DIRECTION = 1.
     const WRONG_DIRECTION = -1.
-    const STUPID_ROOM = -50.
-    const CLOSED_EXIT = -50.
-    const INVALID_EXIT = -100.
+    const STUPID_ROOM = -10.
+    const CLOSED_EXIT = -10.
+    const LOOPING_BEHAVIOR = -100.
+    const INVALID_EXIT = -10.
     # These all return an integer. If it is a scalar function, it returns the scalar. If it is a vector function, it returns the onehot index (1-indexed.)
     const STATE_FUNCTIONS = Dict(
         "CURRENT" => (env::StrongholdEnvironment, c::Room) -> c.piece,
@@ -91,21 +97,26 @@ begin  # Optimization hell
     )
     const NUM_SCALAR_FUNCTIONS = sum(STATE_WIDTHS[x] == 1 for x in INPUT_VEC_FORMAT)
     const NUM_VECTOR_FUNCTIONS = length(INPUT_VEC_FORMAT) - NUM_SCALAR_FUNCTIONS
+    # Collect the functions for fast reference later
     const SCALAR_FUNCTION_LIST = SVector{NUM_SCALAR_FUNCTIONS}([STATE_FUNCTIONS[x] for x in INPUT_VEC_FORMAT if STATE_WIDTHS[x] == 1])
     const VECTOR_FUNCTION_LIST = SVector{NUM_VECTOR_FUNCTIONS}([STATE_FUNCTIONS[x] for x in INPUT_VEC_FORMAT if STATE_WIDTHS[x] != 1])
+    # Trust me on these
+    # Makes a Vector of indices for where to put the results of the scalar functions
     const SCALAR_FUNCTION_OFFSETS = SVector{NUM_SCALAR_FUNCTIONS}([sum([STATE_WIDTHS[x] for x in INPUT_VEC_FORMAT[1:i]]) + 1 for i in 0:(length(INPUT_VEC_FORMAT)-1) if STATE_WIDTHS[INPUT_VEC_FORMAT[i+1]] == 1])
+    # Makes a Vector of indices ONE BELOW the start of the one-hot vector in the output.
+    # Since the vector functions return a 1-indexed scalar, if you add 1 to the vector function offset you should get the first index of the output vector.
     const VECTOR_FUNCTION_OFFSETS = SVector{NUM_VECTOR_FUNCTIONS}([sum([STATE_WIDTHS[x] for x in INPUT_VEC_FORMAT[1:i]]) for i in 0:(length(INPUT_VEC_FORMAT)-1) if STATE_WIDTHS[INPUT_VEC_FORMAT[i+1]] != 1])
 end
 
 begin
-    Reinforce.finished(env::StrongholdEnvironment, s′) = current(env).piece == 11
+    Reinforce.finished(env::StrongholdEnvironment, s′) = current(env).piece == env.target_piece
     Reinforce.actions(env::StrongholdEnvironment, s) = 0:5
     Reinforce.state(env::StrongholdEnvironment) = env.state
-    train_ind = 1
     function Reinforce.reset!(env::StrongholdEnvironment)
         env.resettable || return env
         env.stronghold = strongholds[rand(train)]
         env.room = length(env.stronghold)
+        env.visited_rooms = zeros(Bool, env.room)
         env.last_piece = 14
         env.last_exit = 0
         env.entry = 0
@@ -117,15 +128,21 @@ begin
     function Reinforce.step!(env::StrongholdEnvironment, s, a)
         env.steps += 1
         c = current(env)
-        if a > piece_to_num_exits[c.piece]
+        if a > piece_to_num_exits[c.piece]  # Chose an exit that can never have a room
             env.reward = INVALID_EXIT
-        elseif a == 0 ? c.parent == 0 : c.exits[a] == 0
+        elseif a == 0 ? c.parent == 0 : c.exits[a] == 0  # Chose an exit that doesn't have a room
             env.reward = CLOSED_EXIT
         else
-            env.reward = c.correctDirection == a ? CORRECT_DIRECTION : WRONG_DIRECTION
+            # If you have already been in this room, and you go back the way you came, you're looping.
+            if env.visited_rooms[env.room] && a == env.entry 
+                env.reward = LOOPING_BEHAVIOR
+            else
+                env.reward = c.correctDirection == a ? CORRECT_DIRECTION : WRONG_DIRECTION
+            end
             env.last_piece = c.piece
             env.last_exit = a
-            if a == 0
+            env.visited_rooms[env.room] = true
+            if a == 0  # Going towards the start requires a search
                 env.entry = findfirst(==(env.room), env.stronghold[c.parent].exits)
                 env.room = c.parent
             else
@@ -135,9 +152,9 @@ begin
         end
         env.state = get_state(env)
         c = current(env)
-        if current(env).piece == 11
-            env.reward = PORTAL_ROOM
-        elseif c.piece > 9
+        if c.piece == env.target_piece  # Success! Much reward.
+            env.reward = TARGET_ROOM
+        elseif c.piece > 9  # It happens that this is all of the stupid rooms (rooms that never have an exit other than the entrance)
             env.reward = min(env.reward, STUPID_ROOM)
         end
         return reward(env), state(env)
@@ -152,7 +169,7 @@ begin
 end
 
 struct StrongholdReplayBuffer
-    states::SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Float32}}
+    states::SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Float32}}  # Float32 to avoid converting to Float32 multiple times later
     actions::SVector{MAX_STEPS, Int8}
     rewards::SVector{MAX_STEPS, Int8}
 end
@@ -160,6 +177,13 @@ end
 function Base.iterate(rb::StrongholdReplayBuffer, i=1)
     (i > MAX_STEPS || rb.actions[i] == -1) && return nothing
     return (rb.states[i], rb.actions[i], rb.rewards[i], rb.states[i+1]), i + 1
+end
+
+begin
+    # Oracle policies need to have the environment to know which way to go, so need to be treated differently by functions.
+    abstract type AbstractOraclePolicy <: AbstractPolicy end
+    mutable struct OraclePolicy <: AbstractOraclePolicy env::Union{StrongholdEnvironment, Nothing} end
+    Reinforce.action(π::OraclePolicy, r, s, A) = current(π.env).correctDirection
 end
 
 return

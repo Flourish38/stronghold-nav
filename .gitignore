@@ -28,3 +28,4 @@ models/*/
 *.png
 *.pickle
 *.onnx
+.vscode/

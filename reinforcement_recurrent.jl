@@ -13,13 +13,7 @@ end
     using Statistics
     using ProgressMeter: @showprogress
     using BenchmarkTools: @benchmark
-    using Plots
-    # Hack-y compatibility fix, I think unnecessary
-    #=
-    function (m::Flux.LSTMCell{A,V,<:Tuple{AbstractMatrix{T}, Any}})(s, x::SVector{N, T2}) where {A, V, T, N, T2<:Integer}
-        return m(s, SVector{N, T}(x))
-    end
-    =#
+    using UnicodePlots
 end
 
 begin
@@ -55,7 +49,8 @@ begin
 end
 
 begin
-    mutable struct OccasionalOraclePolicy{P<:AbstractPolicy} <: AbstractPolicy
+    # The OccasionalOraclePolicy will randomly turn into an oracle policy if a random number is > `chance`. It is of dubious utility.
+    mutable struct OccasionalOraclePolicy{P<:AbstractPolicy} <: AbstractOraclePolicy
         state::Int
         chance::Float64
         p::P
@@ -110,28 +105,13 @@ begin
     Reinforce.maxsteps(env::MultiThreadEnvironment) = maxsteps(environment(env))
 end
 
-#=
-begin
-    struct RecurrentApproximator
-        approximator
-    end
-    Reinforce.reset!(ra::RecurrentApproximator) = Flux.reset!(ra.approximator)
-    (ra::RecurrentApproximator)(s) = ra.approximator.(s)[end]
-end
-
-begin
-    struct DeRecurrentApproximator
-        approximator
-    end
-    Reinforce.reset!(ra::DeRecurrentApproximator) = nothing
-    (ra::DeRecurrentApproximator)(s) = ra.approximator(s[end])
-end
-=#
-
 function winrate(policy, dataset)
     wins = 0
     #=@showprogress 10=# for i in dataset
         env = StrongholdEnvironment(strongholds[i], false)
+        if typeof(policy) <: AbstractOraclePolicy
+            policy.env = env
+        end
         ep = Episode(env, policy)
         for _ in ep
         end
@@ -142,11 +122,12 @@ function winrate(policy, dataset)
     return wins / length(dataset)
 end
 
+# This is a significant speedup over single-threaded
 function winrate(p::MultiThreadPolicy, dataset)
     wins = Threads.Atomic{Int}(0)
     Threads.@threads for i in dataset
         env = StrongholdEnvironment(strongholds[i], false)
-        if typeof(policy(p)) <: OccasionalOraclePolicy
+        if typeof(policy(p)) <: AbstractOraclePolicy
             policy(p).env = env
         end
         ep = Episode(env, p)
@@ -161,23 +142,25 @@ end
 
 begin  # non-recurrent
     model = Chain(Dense(STATE_WIDTH, 64), Dense(64, 64), Dense(64, 6))
-    #approx = DeRecurrentApproximator(model)
 end
 
 begin  # recurrent
     model = Chain(LSTM(STATE_WIDTH, 64), LSTM(64, 64), Dense(64, 6))
-    #approx = DeRecurrentApproximator(model)
 end
 
 begin  # load model
-    loaded_bson = BSON.load("models/tmp/rl_rnn_h_7956.bson")
+    loaded_bson = BSON.load("models/tmp/rl_rnn_a2_434.bson")
     model = loaded_bson[:rl_model]
 end
 
 begin
     qa = QApproximatorPolicy(model, deepcopy(model), 0.95)
     nb = NoBacktrackingPolicy(qa)
+    eg = EpsilonGreedyPolicy(0.3, qa)
     env = StrongholdEnvironment()
+end
+
+begin
     opt = ADAM()
     iters = 0
 end
@@ -204,11 +187,12 @@ function update_buffer!(buffer::CircularVectorBuffer{StrongholdReplayBuffer}, en
     end
 end
 
+# This is a significant speedup over single-threaded
 function update_buffer!(buffer::CircularVectorBuffer{StrongholdReplayBuffer}, _, p::MultiThreadPolicy, M)
     temp = SizedVector{M, StrongholdReplayBuffer}(undef)
     Threads.@threads for i in 1:M
         env = StrongholdEnvironment()
-        if typeof(policy(p)) <: OccasionalOraclePolicy
+        if typeof(policy(p)) <: AbstractOraclePolicy
             policy(p).env = env
         end
         ep = Episode(env, p)
@@ -233,15 +217,15 @@ end
     replay_buffer = CircularVectorBuffer{StrongholdReplayBuffer}(buffer_size)
     rp = RandomPolicy()
     best_dev_winrate = winrate(MultiThreadPolicy(qa), dev)
-    #update_buffer!(replay_buffer, env, rp, buffer_size)
+    update_buffer!(replay_buffer, env, MultiThreadPolicy(rp), buffer_size)
 end
 
 begin
     eg = EpsilonGreedyPolicy(0.02, qa)
     #oo = OccasionalOraclePolicy(0.006, eg)
-    oo = OccasionalOraclePolicy(1, FirstExitPolicy())
+    #oo = OccasionalOraclePolicy(1, FirstExitPolicy())
     Reinforce.maxsteps(env::StrongholdEnvironment) = MAX_STEPS
-    update_buffer!(replay_buffer, env, MultiThreadPolicy(oo), buffer_size)
+    update_buffer!(replay_buffer, env, MultiThreadPolicy(eg), buffer_size)
 end
 
 function mean_loss_replay(replay, qa)
@@ -270,6 +254,9 @@ function train_step!(params, opt, batch, qa)
     Flux.Optimise.update!(opt, params, grads)
 end
 
+# Sadly, this is not a significant speedup over single-threaded for batch sizes > 4.
+# Zygote gradients use a ton of memory, either because of the way I'm calculating them or just because that's the way it is.
+# Because of this, most of the time during training is spent on gc, which cannot be multithreaded (or already is, I forget).
 function train_step_mt!(params, opt, batch, qa)
     mt = MultiThreadPolicy(qa)
     temp = Vector{Flux.Zygote.Grads}(undef, Threads.nthreads())
@@ -283,6 +270,7 @@ function train_step_mt!(params, opt, batch, qa)
         end
     end
     
+    # combine gradients
     grads = temp[1]
     vs = collect.(values.(temp))
     for v in vs[2:end]
@@ -292,9 +280,14 @@ function train_step_mt!(params, opt, batch, qa)
     Flux.Optimise.update!(opt, params, grads)
 end
 
+# Q-learning algorithm from https://www.cs.upc.edu/~mmartin/URL/Lecture4.pdf, slide 10
 function training_loop(M, K, B, update_interval, qa::QApproximatorPolicy, eg, model, opt, replay_buffer::CircularVectorBuffer{StrongholdReplayBuffer})
     global best_dev_winrate, dev, iters
+    println("Start\t", best_dev_winrate, "\t", now())
     next_time = now() + update_interval
+    #oracle_batch = CircularVectorBuffer{StrongholdReplayBuffer}(B)
+    #oracle = MultiThreadPolicy(OraclePolicy(nothing))
+    params = Flux.params(model)
     while true
         iters += 1
         qa.target = deepcopy(qa.approximator)
@@ -302,10 +295,18 @@ function training_loop(M, K, B, update_interval, qa::QApproximatorPolicy, eg, mo
         
         for i = 1:K
             batch = rand(replay_buffer, B)
-            train_step!(Flux.params(model), opt, batch, qa)
+            train_step!(params, opt, batch, qa)
         end
-        
+        #=
+        # This was an experiment. Having it use some of the oracle seems to tend to make it worse.
+        # It can be used for fine-tuning with some strange results, notably that it will tend to "dive deep" once it reaches depth 12,
+        # since the model detects that the oracle is probably running because it would never go that deep on its own.
+        update_buffer!(oracle_batch, 0, oracle, B)
+        train_step!(params, opt, oracle_batch, qa)
+        =#
         mt = MultiThreadPolicy(qa)
+        # This is used to speed up training, since calculating winrate for the whole dev set takes quite a while.
+        # This way, we only calculate the whole dev set winrate when it's "promising".
         dev_subset = rand(dev, 100)
         subset_winrate = winrate(mt, dev_subset)
         
@@ -314,24 +315,24 @@ function training_loop(M, K, B, update_interval, qa::QApproximatorPolicy, eg, mo
             next_time = now() + update_interval
         end
 
-        #if subset_winrate >= best_dev_winrate
+        if subset_winrate > 0 && subset_winrate >= best_dev_winrate
             w = winrate(mt, dev)
             println(iters, "\t", subset_winrate, "\t", w)
             if w > best_dev_winrate
                 println("New best! +", w - best_dev_winrate)
                 best_dev_winrate = w
-                bson("models/tmp/rl_rnn_j7_$iters.bson", rl_model = model, adam = opt, iters = iters)
+                bson("models/tmp/rl_rnn_a2_$iters.bson", rl_model = model, adam = opt, iters = iters)
             end
-        #end
+        end
     end
 end
 
 begin
-    update_interval = Minute(10)
-    M = 100
-    K = 1
-    B = M ÷ K
-    training_loop(M, K, B, update_interval, qa, oo, model, opt, replay_buffer)
+    update_interval = Second(30)
+    M = 100  # number of replays to be added to the buffer during each step
+    K = 100  # number of batches to train on during each step
+    B = M ÷ K  # batch size
+    training_loop(M, K, B, update_interval, qa, eg, model, opt, replay_buffer)
 end
 
 begin  # When you interrupt it and it would have maybe saved, do this
@@ -350,7 +351,8 @@ end
     println(winrate(MultiThreadPolicy(eg), dev))
 end
 
-function win_distribution(policy, dataset)
+# How many steps does it take to win, if it does?
+function win_distribution(policy, dataset, keep_losses=false)
     distribution = Int[]
     max_steps_win = 0
     @showprogress 1 for i in dataset
@@ -364,13 +366,15 @@ function win_distribution(policy, dataset)
                 println(i, "\t", env.steps)
                 max_steps_win = env.steps
             end
+        elseif keep_losses
+            push!(distribution, -maxsteps(env))
         end
     end
     return distribution
 end
 
 begin
-    Reinforce.maxsteps(env::StrongholdEnvironment) = 200
+    Reinforce.maxsteps(env::StrongholdEnvironment) = 100
     distr = win_distribution(bqa, dev)
     y_graph = [sum(distr .== x) for x in 1:maxsteps(env)]
     y_graph_cumulative = [sum(y_graph[1:x]) for x in 1:maxsteps(env)] ./ length(dev)
@@ -392,25 +396,54 @@ begin
 end
 
 begin
-    best_model = BSON.load("models/tmp/rl_rnn_j7_7959.bson")[:rl_model]
-    #mhm = Chain(LSTM(STATE_WIDTH, 64), LSTM(64, 64), Dense(64, 6))
-    #Flux.loadparams!(mhm, Flux.params(best_model))
-    #best_model = mhm
+    best_model = BSON.load("models/rl_rnn_2.3.bson")[:rl_model]
     bqa = QApproximatorPolicy(best_model, best_model, 0.95)
     bnb = NoBacktrackingPolicy(bqa)
     beg = EpsilonGreedyPolicy(0.02, bqa)
-    Reinforce.maxsteps(env::StrongholdEnvironment) = 400
 end
 
 begin
+    Reinforce.maxsteps(env::StrongholdEnvironment) = 50
     println(winrate(MultiThreadPolicy(bqa), dev))
     #println(winrate(MultiThreadPolicy(bnb), dev))
     println(winrate(MultiThreadPolicy(beg), dev))
 end
 
+# This is my theoretical difficulty calculation for q-learning models.
+# It's fairly simple, you just just add up how much the model doesn't want to go the correct direction.
+function compute_difficulty(env, qa, verbose=false)
+    oracle = OraclePolicy(env)
+    ep = Episode(env, oracle)
+    reset!(qa)
+    total_difficulty = 0
+    for (s, a, r, s′) in ep
+        res = qa.approximator(s)
+        correct = res[a + 1]
+        total_difficulty += sum(filter(>(0), res .- correct))
+        if verbose
+            println(a, "\t", sum(filter(>(0), res .- correct)), "\t", res)
+        end
+    end
+    return total_difficulty
+end
+
+begin
+    difficulties = @showprogress 1 [compute_difficulty(StrongholdEnvironment(s, false), bqa) for s in strongholds[train]]
+    wins = win_distribution(bqa, train, true)
+end
+
+begin
+    f(x) = filter(<(100), x)
+    win_difficulties = difficulties[wins .>= 0]
+    loss_difficulties = difficulties[wins .< 0]
+    #histogram2d(rand(f(loss_difficulties), length(difficulties)), rand(f(win_difficulties), length(difficulties)), normalize=:probability, aspect_ratio=:equal)
+    histogram(difficulties ./ wins, normalize=:probability)
+end
+
+
 begin
     Flux.reset!(best_model)
-    env = StrongholdEnvironment(strongholds[dev[3]], false)
+    env = StrongholdEnvironment(strongholds[train[17491]], false)
     s = state(env)
     output = best_model(s)
     println(argmax(output) - 1, "\t", output)
