@@ -1,6 +1,6 @@
-@time begin
-    println("Loading packages...")
+begin
     using StaticArrays
+    using ProgressMeter
 end
 
 begin
@@ -11,7 +11,7 @@ begin
     const PIECE_TO_NUM_EXITS = @SVector [3, 1, 1, 1, 3, 1, 1, 5, 1, 0, 0, 0, 1, 0]
 end
 
-mutable struct Room  # Very space-optimized; must be mutable to assign parent, depth, and correctDirection later.
+mutable struct Room  # Very space-optimized; must be mutable to assign parent, depth, and target details later.
     exits::SVector{5, Int16}
     piece::UInt8
     orientation::UInt8
@@ -73,10 +73,14 @@ function assignCorrectDirection!(stronghold)  # Tree flood, this time from porta
     end
 end
 
-function load_strongholds()
+function load_strongholds(filename)
     println("Loading Strongholds...")
     strongholds = Vector{Room}[]
-    open("data/outputDirections.txt", "r") do io
+    open(filename, "r") do io
+        seekend(io)
+        filesize = position(io)
+        p = Progress(filesize; dt=1, showspeed=true)
+        seekstart(io)
         line = ""
         while true
             stronghold = Room[]
@@ -92,6 +96,7 @@ function load_strongholds()
                 push!(stronghold, Room(line))
             end
             push!(strongholds, stronghold)
+            update!(p, position(io))
         end
     end
     assignParents!.(strongholds)
@@ -100,15 +105,11 @@ function load_strongholds()
 end
 
 begin
-    strongholds = @time load_strongholds()
+    strongholds = load_strongholds("data/outputDirections.txt")
     n = length(strongholds)
     train = 1:floor(Int, 0.9n)
     dev = (floor(Int, 0.9n)+1):floor(Int, 0.95n)
     test = (floor(Int, 0.95n)+1):n
-end
-
-function get_piece(stronghold, room)::UInt8
-    return room <= 0 ? 14 : stronghold[room].piece
 end
 
 # This makes the repl happy when you include the file
