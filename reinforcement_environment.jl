@@ -49,7 +49,6 @@ struct StrongholdReplay{N, N1}  # boo, and ComputedFieldTypes didn't work (N1 is
     rewards::MVector{N, Int8}
     function StrongholdReplay(n)
         replay = new{n, n+1}(MMatrix{STATE_WIDTH, n+1, UInt8}(undef), MVector{n, Int8}(undef), MVector{n, Int8}(undef))
-        fill!(replay.states, Int8(0))
         fill!(replay.actions, Int8(-1))
         replay
     end
@@ -64,6 +63,10 @@ end
 function Base.length(replay::StrongholdReplay{N}) where N 
     replay.actions[N] != Int8(-1) && (return N)
     return searchsortedlast(replay.actions, Int8(-1), lt=(>=))  # a little magic for ya (I didn't want to write binary search myself)
+end
+
+function Base.size(replay::StrongholdReplay{N}) where N
+    return N
 end
 
 function valid_data(replay)
@@ -101,8 +104,8 @@ mutable struct StrongholdEnvironment <: AbstractEnvironment
     end
 end
 
-function StrongholdEnvironment(r::Bool=true, target_piece::UInt8=UInt8(11), dataset=train)
-    return StrongholdEnvironment(strongholds[rand(dataset)], r, target_piece)
+function StrongholdEnvironment(r::Bool=true, target_piece::UInt8=UInt8(11))
+    return StrongholdEnvironment(strongholds[rand(train)], r, target_piece)
 end
 
 begin  # Optimization hell
@@ -213,7 +216,7 @@ begin
         return reward(env), state(env)
     end
     Reinforce.ismdp(::StrongholdEnvironment) = false
-    Reinforce.maxsteps(::StrongholdEnvironment) = MAX_STEPS
+    Reinforce.maxsteps(::StrongholdEnvironment) = size(env.replay)
 end
 
 return
