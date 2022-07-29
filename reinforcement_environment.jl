@@ -1,13 +1,17 @@
+begin
+    using StaticArrays
+    using Reinforce
+end
+
+begin  # Necessary for goto
+if @isdefined ENVIRONMENT_DECLARED
+    @goto skip_environment_declare
+end
+
 # INPUT_VEC_ORDER must be defined before including this file
 println(INPUT_VEC_ORDER)
 
 include("load_strongholds.jl")
-
-begin
-    println("Loading packages...")
-    using StaticArrays
-    using Reinforce
-end
 
 begin  # Parameters and rewards
     MAX_STEPS = 50
@@ -219,4 +223,8 @@ begin
     Reinforce.maxsteps(::StrongholdEnvironment) = size(env.replay)
 end
 
+ENVIRONMENT_DECLARED = true
+
+@label skip_environment_declare
+end
 return

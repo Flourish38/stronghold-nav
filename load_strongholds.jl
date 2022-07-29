@@ -3,6 +3,11 @@ begin
     using ProgressMeter
 end
 
+begin  # Necessary for goto
+if @isdefined STRONGHOLDS_LOADED
+    @goto skip_stronghold_load
+end
+
 begin
     const _orientations_vec = @SVector ["E", "W", "N", "S"]
     const ORIENTATIONS = Dict{String, Int8}(x => i for (i, x) in enumerate(_orientations_vec))
@@ -112,5 +117,8 @@ begin
     test = (floor(Int, 0.95n)+1):n
 end
 
-# This makes the repl happy when you include the file
+STRONGHOLDS_LOADED = true  # This is just so I don't include the file multiple times
+
+@label skip_stronghold_load
+end
 return
