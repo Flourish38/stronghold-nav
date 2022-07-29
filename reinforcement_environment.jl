@@ -163,27 +163,4 @@ begin
     Reinforce.maxsteps(::StrongholdEnvironment) = MAX_STEPS
 end
 
-begin
-    struct FirstExitPolicy <: AbstractPolicy end
-    Reinforce.action(π::FirstExitPolicy, r, s, A) = 1    
-end
-
-struct StrongholdReplayBuffer
-    states::SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Float32}}  # Float32 to avoid converting to Float32 multiple times later
-    actions::SVector{MAX_STEPS, Int8}
-    rewards::SVector{MAX_STEPS, Int8}
-end
-
-function Base.iterate(rb::StrongholdReplayBuffer, i=1)
-    (i > MAX_STEPS || rb.actions[i] == -1) && return nothing
-    return (rb.states[i], rb.actions[i], rb.rewards[i], rb.states[i+1]), i + 1
-end
-
-begin
-    # Oracle policies need to have the environment to know which way to go, so need to be treated differently by functions.
-    abstract type AbstractOraclePolicy <: AbstractPolicy end
-    mutable struct OraclePolicy <: AbstractOraclePolicy env::Union{StrongholdEnvironment, Nothing} end
-    Reinforce.action(π::OraclePolicy, r, s, A) = current(π.env).correctDirection
-end
-
 return

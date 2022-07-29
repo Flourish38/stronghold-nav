@@ -18,11 +18,12 @@ mutable struct Room  # Very space-optimized; must be mutable to assign parent, d
     parent::Int16
     depth::Int8
     correctDirection::Int8
+    targetDistance::Int8
     function Room(s::String)
         info = split(s)
         exits = (x -> parse(Int16, x)+1).(info[3:end])
         exits = vcat(exits, fill(-1, 5 - length(exits)))
-        new(exits, pieces[info[1]], orientations[info[2]], -1, -1, -1)
+        new(exits, pieces[info[1]], orientations[info[2]], -1, -1, -1, -1)
     end
 end
 
@@ -53,6 +54,7 @@ function assignCorrectDirection!(stronghold)  # Tree flood, this time from porta
     queue = Set{Int}()
     n = findfirst(r -> r.piece == 11, stronghold)
     stronghold[n].correctDirection = 0
+    stronghold[n].targetDistance = 0
     push!(queue, n)
     while !isempty(queue)
         n = pop!(queue)
@@ -60,11 +62,13 @@ function assignCorrectDirection!(stronghold)  # Tree flood, this time from porta
         i = r.parent
         if i > 0 && stronghold[i].correctDirection == -1
             stronghold[i].correctDirection = findfirst(==(n), stronghold[i].exits)
+            stronghold[i].targetDistance = r.targetDistance + 1
             push!(queue, i)
         end
         for i in r.exits
             if i > 0 && stronghold[i].correctDirection == -1
                 stronghold[i].correctDirection = 0
+                stronghold[i].targetDistance = r.targetDistance + 1
                 push!(queue, i)
             end
         end

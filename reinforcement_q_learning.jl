@@ -1,6 +1,7 @@
-begin
+@time begin
     const INPUT_VEC_ORDER = "DEPTH,DIRECTION,ENTRY,PREV_EXIT_INDEX_COMPAT,CURRENT,PARENT_ROOM,EXIT_1,EXIT_2,EXIT_3,EXIT_4,EXIT_5" # DEPTH,
-    @time include("reinforcement_environment.jl")
+    include("reinforcement_environment.jl")
+    include("utils.jl")
 end
 
 @time begin
@@ -14,38 +15,6 @@ end
     using ProgressMeter: @showprogress
     using BenchmarkTools: @benchmark
     using UnicodePlots
-end
-
-begin
-    struct EpsilonGreedyPolicy{T} <: AbstractPolicy where T <: AbstractPolicy
-        ϵ
-        p::T
-    end
-    Reinforce.reset!(eg::EpsilonGreedyPolicy) = reset!(eg.p)
-    Reinforce.action(π::EpsilonGreedyPolicy, r, s, A) = rand() < π.ϵ ? rand(A) : action(π.p, r, s, A)
-end
-
-begin
-    mutable struct QApproximatorPolicy <: AbstractPolicy
-        approximator
-        target
-        γ
-    end
-    Reinforce.action(qa::QApproximatorPolicy, r, s, A) = A[argmax(qa.approximator(s))]
-    Reinforce.reset!(qa::QApproximatorPolicy) = Flux.reset!(qa.approximator)
-    function loss(qa::QApproximatorPolicy, s, a, r, s′) 
-        target = r + qa.γ*maximum(qa.target(s′))
-        prediction = qa.approximator(s)[a]
-        (target - prediction)^2
-    end
-end
-
-begin
-    struct NoBacktrackingPolicy <: AbstractPolicy
-        p::QApproximatorPolicy
-    end
-    Reinforce.reset!(nb::NoBacktrackingPolicy) = reset!(nb.p)
-    Reinforce.action(π::NoBacktrackingPolicy, r, s, A) = argmax(π.p.approximator(s)[2:6])
 end
 
 begin
@@ -73,71 +42,6 @@ begin
             return action(oo.p, r, s, A)
         end
     end
-end
-
-begin
-    struct MultiThreadPolicy{P<:AbstractPolicy} <: AbstractPolicy
-        ps::Vector{P}
-        function MultiThreadPolicy(p::P) where P<:AbstractPolicy
-            new{P}(vcat([p], [deepcopy(p) for _ in 2:Threads.nthreads()]))
-        end
-    end
-    policy(mt::MultiThreadPolicy) = mt.ps[Threads.threadid()]
-    Reinforce.reset!(mt::MultiThreadPolicy) = reset!(policy(mt))
-    Reinforce.action(mt::MultiThreadPolicy, r, s, A) = action(policy(mt), r, s, A)
-end
-
-begin
-    struct MultiThreadEnvironment{E<:AbstractEnvironment} <: AbstractEnvironment
-        envs::Vector{E}
-        function MultiThreadEnvironment(env::E) where E<:AbstractEnvironment
-            new{E}([deepcopy(env) for _ in 1:Threads.nthreads()])
-        end
-    end
-    environment(env::MultiThreadEnvironment) = env.envs[Threads.threadid()]
-    Reinforce.reset!(env::MultiThreadEnvironment) = reset!(environment(env))
-    Reinforce.actions(env::MultiThreadEnvironment, s) = actions(environment(env), s)
-    Reinforce.step!(env::MultiThreadEnvironment, s, a) = step!(environment(env), s, a)
-    Reinforce.finished(env::MultiThreadEnvironment, s′) = finished(environment(env), s′)
-    Reinforce.state(env::MultiThreadEnvironment) = state(environment(env))
-    Reinforce.reward(env::MultiThreadEnvironment) = reward(environment(env))
-    Reinforce.ismdp(env::MultiThreadEnvironment) = ismdp(environment(env))
-    Reinforce.maxsteps(env::MultiThreadEnvironment) = maxsteps(environment(env))
-end
-
-function winrate(policy, dataset)
-    wins = 0
-    #=@showprogress 10=# for i in dataset
-        env = StrongholdEnvironment(strongholds[i], false)
-        if typeof(policy) <: AbstractOraclePolicy
-            policy.env = env
-        end
-        ep = Episode(env, policy)
-        for _ in ep
-        end
-        if finished(env, 0)
-            wins += 1
-        end
-    end
-    return wins / length(dataset)
-end
-
-# This is a significant speedup over single-threaded
-function winrate(p::MultiThreadPolicy, dataset)
-    wins = Threads.Atomic{Int}(0)
-    Threads.@threads for i in dataset
-        env = StrongholdEnvironment(strongholds[i], false)
-        if typeof(policy(p)) <: AbstractOraclePolicy
-            policy(p).env = env
-        end
-        ep = Episode(env, p)
-        for _ in ep
-        end
-        if finished(env, 0)
-            wins[] += 1
-        end
-    end
-    return wins[] / length(dataset)
 end
 
 begin  # non-recurrent
@@ -168,6 +72,17 @@ end
 begin
     opt = loaded_bson[:adam]
     iters = loaded_bson[:iters]
+end
+
+struct StrongholdReplayBuffer
+    states::SizedVector{MAX_STEPS + 1, SVector{STATE_WIDTH, Float32}}  # Float32 to avoid converting to Float32 multiple times later
+    actions::SVector{MAX_STEPS, Int8}
+    rewards::SVector{MAX_STEPS, Int8}
+end
+
+function Base.iterate(rb::StrongholdReplayBuffer, i=1)
+    (i > MAX_STEPS || rb.actions[i] == -1) && return nothing
+    return (rb.states[i], rb.actions[i], rb.rewards[i], rb.states[i+1]), i + 1
 end
 
 function update_buffer!(buffer::CircularVectorBuffer{StrongholdReplayBuffer}, env, p, M)
@@ -328,7 +243,7 @@ function training_loop(M, K, B, update_interval, qa::QApproximatorPolicy, eg, mo
 end
 
 begin
-    update_interval = Second(30)
+    update_interval = Minute(10)
     M = 100  # number of replays to be added to the buffer during each step
     K = 100  # number of batches to train on during each step
     B = M ÷ K  # batch size
