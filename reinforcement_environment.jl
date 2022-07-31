@@ -73,10 +73,10 @@ function Base.size(replay::StrongholdReplay{N}) where N
     return N
 end
 
-function valid_data(replay)
-    n = length(replay)
+function valid_data(replay, n)
     return states(replay, n), actions(replay, n), rewards(replay, n)
 end
+valid_data(replay) = valid_data(replay, length(replay))
 
 states(replay, n) = view(replay.states, :, SOneTo(n+1))  # For some reason, if you use indexing instead of a view, it takes QUADRATIC COMPILE TIME??? No thank you.
 actions(replay, n) = view(replay.actions, SOneTo(n))

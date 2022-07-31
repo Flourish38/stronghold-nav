@@ -71,11 +71,14 @@ Reinforce.reward(env::MultiThreadEnvironment) = reward(environment(env))
 Reinforce.ismdp(env::MultiThreadEnvironment) = ismdp(environment(env))
 Reinforce.maxsteps(env::MultiThreadEnvironment) = maxsteps(environment(env))
 
-struct NoBacktrackingPolicy <: AbstractPolicy
-    p::QApproximatorPolicy
+# Necessary for wrapper policies like NoBacktrackingPolicy that rely on the model output directly.
+abstract type AbstractModelPolicy <: AbstractPolicy end
+
+struct NoBacktrackingPolicy{P <: AbstractModelPolicy} <: AbstractPolicy
+    p::P
 end
 Reinforce.reset!(nb::NoBacktrackingPolicy) = reset!(nb.p)
-Reinforce.action(π::NoBacktrackingPolicy, r, s, A) = argmax(π.p.approximator(s)[2:6])
+Reinforce.action(π::NoBacktrackingPolicy, r, s, A) = argmax(π.p.model(s)[2:6])
 
 struct NeverMissTargetPolicy{P <: AbstractPolicy} <: AbstractPolicy
     p::P
